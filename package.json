@@ -1,0 +1,46 @@
+{
+  "name": "video-analyzer",
+  "version": "0.1.0",
+  "description": "Gemini-powered video and audio analysis toolkit, usable as an MCP server or as an agent Skill.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "video-analyzer": "./dist/cli.js",
+    "video-analyzer-mcp": "./dist/mcp.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint src tests skills",
+    "lint:fix": "oxlint --fix src tests skills",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run format:check"
+  },
+  "dependencies": {
+    "@google/genai": "^2.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "oxlint": "^1.90.0",
+    "prettier": "^3.6.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

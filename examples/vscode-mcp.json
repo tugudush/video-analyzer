@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "videoAnalyzer": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/mcp.js"],
+      "env": {
+        "GEMINI_API_KEY": "<your-key>"
+      }
+    }
+  }
+}
