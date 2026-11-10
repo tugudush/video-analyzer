@@ -44,6 +44,17 @@ npm link        # optional: puts `video-analyzer` and `video-analyzer-mcp` on PA
 
 Without `npm link`, use `node /path/to/video-analyzer/dist/cli.js` wherever this document shows `video-analyzer`.
 
+What you actually need depends on how you use the package:
+
+| Setup                                                                            | `npm install` | `npm run build` | `npm link` |
+| -------------------------------------------------------------------------------- | ------------- | --------------- | ---------- |
+| MCP server                                                                       | yes           | yes             | no         |
+| Skill kept in this repo (`skills/video-analyzer`)                                | yes           | yes             | no         |
+| Skill copied to a user-level folder (`~/.copilot/skills`, `~/.claude/skills`, …) | yes           | yes             | **yes**    |
+| Skill copied to a user-level folder, with `VIDEO_ANALYZER_CLI_PATH` set          | yes           | yes             | no         |
+
+`npm run build` is never skippable: `dist/cli.js` and `dist/mcp.js` are compiler output and are not checked in.
+
 ## Use as MCP
 
 Add a server entry to your MCP client. VS Code (`.vscode/mcp.json`):
@@ -115,7 +126,20 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 
    Agent-agnostic locations also work: `.agents/skills/` (project) and `~/.agents/skills/` (personal).
 
-   > A copied Skill sits outside this repo, so the launcher cannot find `dist/cli.js` by relative path — it falls back to a global `video-analyzer` binary. Either install the CLI (`npm link` or `npm i -g .`) or set `VIDEO_ANALYZER_CLI_PATH` in step 3.
+   **User-level (global) installs need one extra command.** A Skill copied into `~/.copilot/skills` or `~/.claude/skills` no longer sits next to `dist/cli.js`, so the launcher falls back to a `video-analyzer` command on `PATH`. Build the CLI, then expose it:
+
+   ```bash
+   # Run inside the repo clone
+   npm install
+   npm run build
+   npm link            # or: npm install -g .
+   ```
+
+   The linked command points back at the checkout, so keep the clone (at least `dist/` and `node_modules/`) in place — deleting it breaks the global `video-analyzer` binary.
+
+   If you would rather not install a global command, set `VIDEO_ANALYZER_CLI_PATH` in step 3 instead. That still requires `npm install` and `npm run build`, because `dist/cli.js` loads its dependencies from the checkout's `node_modules/`.
+
+   > A Skill left at `skills/video-analyzer` inside this repo needs neither of the above: the launcher finds the build by relative path.
 
 2. Provide `GEMINI_API_KEY` to the process that runs the agent. The launcher inherits its parent environment, so set it wherever your agent runs commands.
 
@@ -143,10 +167,16 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    >
    > The `env` block in an MCP config applies **only** to the MCP server. The Skill path never reads it — it inherits the process environment instead. If you use both interfaces, set the key in the OS environment (or `.env`) so both see it.
 
-3. Point the launcher at your build if the CLI is not on `PATH`:
+3. Point the launcher at your build if the CLI is neither in this repo nor on `PATH`:
 
    ```bash
    export VIDEO_ANALYZER_CLI_PATH=/absolute/path/to/video-analyzer/dist/cli.js
+   ```
+
+   On Windows set it as a user variable and restart VS Code, so the agent process inherits it:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('VIDEO_ANALYZER_CLI_PATH', 'C:\dev\video-analyzer\dist\cli.js', 'User')
    ```
 
 4. Invoke it:
@@ -156,7 +186,11 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 Check it works:
 
 ```bash
+# Skill kept in this repo
 node skills/video-analyzer/scripts/invoke.mjs list
+
+# User-level Skill (VS Code / Copilot); use ~/.claude/skills/... for Claude Code
+node ~/.copilot/skills/video-analyzer/scripts/invoke.mjs list
 ```
 
 ## Use the CLI Directly
