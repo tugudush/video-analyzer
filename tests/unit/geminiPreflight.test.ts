@@ -1,7 +1,7 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { analyzeVideoOperation } from '../../src/operations/analyzeVideo.js'
 import { searchTimestampOperation } from '../../src/operations/searchTimestamp.js'
@@ -12,10 +12,14 @@ import type { Operation, OperationContext } from '../../src/operations/types.js'
 
 const REMOTE = 'https://media.example.com/demo.mp4'
 
-const fetchMock = vi.fn()
+const fetchMock = vi.hoisted(() => vi.fn())
 
 vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => [{ address: '8.8.8.8', family: 4 }]),
+}))
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('undici')>()),
+  fetch: fetchMock,
 }))
 
 function context(): OperationContext {
@@ -33,11 +37,6 @@ const geminiOperations: Array<{ operation: Operation; input: Record<string, unkn
 describe('Gemini pre-flight', () => {
   beforeEach(() => {
     fetchMock.mockReset()
-    vi.stubGlobal('fetch', fetchMock)
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
   })
 
   it.each(geminiOperations)(

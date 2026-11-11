@@ -295,9 +295,10 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Multi-stream inputs use the first video stream.** Metadata and all frame extraction modes use the first video stream reported by ffprobe, even if a different stream is marked default.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
+- **Gemini retains uploads.** The [Gemini Files API](https://aistudio.google.com/docs/file-input-methods) documents 48-hour storage for uploaded files. This tool does not delete them remotely; use the [Files API](https://aistudio.google.com/api-reference/files) to list or delete them sooner. Deleting a reused upload makes the next request upload it again.
 - **Local AI inputs are uploaded each time.** Mutable local files are not cached or coalesced; identical direct downloads can reuse an upload based on their content.
 - **MCP inlines extracted frames.** `extract_frames` embeds JPEGs up to a 2 MiB base64 budget per call; frames that do not fit, including the first, are reported by path instead. Each inlined image is preceded by its path and label. The CLI returns paths only. Frames are capped at a 1280-pixel longest edge without upscaling.
-- **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
+- **SSRF protection is defense in depth.** Each HTTP redirect is resolved and validated separately, and connections use the validated addresses while preserving the original hostname for TLS. Private hosts are blocked unless explicitly opted in; do not treat media parsing or this filter as a complete sandbox.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
 - **Temporary cleanup is best-effort.** If removal fails, a warning names the directory so it can be deleted manually. Warnings follow `VIDEO_ANALYZER_LOG_LEVEL`; `silent` suppresses them. Startup cleanup only removes old, marked directories whose owning process has exited. Older unmarked temporary files are left untouched and may need manual removal.
 - **Frame extraction writes to disk.** Each extraction persists frames and a paging manifest until you delete its `data.outputDir`. Later pages use `frameSetDir` and do not download or extract again. By default output goes into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
@@ -327,7 +328,7 @@ npm run check        # typecheck + lint + tests + format check
 
 `npm test` and `npm run check` run `npm run build` first (`pretest`). The Skill suite drives the packaged launcher in `dist/`, so without that build a clean checkout would fail for a reason unrelated to the change.
 
-Integration tests generate their own media fixtures with ffmpeg and **skip silently** when ffmpeg is unavailable, so a green run without ffmpeg means 11 tests did not execute. Check the skip count if that matters.
+Integration tests generate their own media fixtures with ffmpeg and skip when ffmpeg or ffprobe is unavailable. Check the test runner's skip count before relying on a green run.
 
 ### Why oxlint instead of ESLint
 

@@ -10,20 +10,24 @@ import { ensureDir } from '../utils/fsUtils.js'
 import type { OperationContext } from './types.js'
 
 /**
- * One Gemini service per process/config so upload reuse survives across calls in
- * a long-lived MCP session.
+ * Reuse uploads within one config and logging context, without routing one
+ * embedded server's diagnostics to another server's logger.
  */
-let sharedService: { config: Config; service: GeminiMediaService } | undefined
+let sharedServices = new WeakMap<Config, WeakMap<OperationContext['logger'], GeminiMediaService>>()
 
 export function getGeminiService(ctx: OperationContext): GeminiMediaService {
   if (ctx.geminiService) return ctx.geminiService
-  if (!sharedService || sharedService.config !== ctx.config) {
-    sharedService = {
-      config: ctx.config,
-      service: new GeminiMediaService({ config: ctx.config, logger: ctx.logger }),
-    }
+  let services = sharedServices.get(ctx.config)
+  if (!services) {
+    services = new WeakMap()
+    sharedServices.set(ctx.config, services)
   }
-  return sharedService.service
+  let service = services.get(ctx.logger)
+  if (!service) {
+    service = new GeminiMediaService({ config: ctx.config, logger: ctx.logger })
+    services.set(ctx.logger, service)
+  }
+  return service
 }
 
 /**
@@ -41,8 +45,7 @@ export function assertGeminiAvailable(ctx: OperationContext): void {
 
 /** Reset the process-wide service (tests only). */
 export function resetGeminiService(): void {
-  sharedService?.service.clearCache()
-  sharedService = undefined
+  sharedServices = new WeakMap()
 }
 
 export interface PreparedMedia {

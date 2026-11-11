@@ -190,6 +190,30 @@ describe('video-analyzer Skill package', () => {
     }
   })
 
+  it('forwards diagnostics from a successful CLI run without changing stdout', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'video-analyzer-diagnostics-'))
+    const cli = path.join(root, 'fake-cli.mjs')
+    try {
+      await writeFile(
+        cli,
+        `process.stdout.write('{"ok":true}\\n'); process.stderr.write('Warning: cleanup failed\\n')`,
+      )
+      const { stdout, stderr } = await execFileAsync(
+        process.execPath,
+        [path.join(SKILL_DIR, 'scripts', 'invoke.mjs'), 'list'],
+        {
+          timeout: 30_000,
+          windowsHide: true,
+          env: { ...process.env, VIDEO_ANALYZER_CLI_PATH: cli },
+        },
+      )
+      expect(JSON.parse(stdout)).toEqual({ ok: true })
+      expect(stderr).toBe('Warning: cleanup failed\n')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   /**
    * The user-level install resolves to the npm bin shim, a batch file that has
    * to run through `cmd.exe`. `cmd.exe` re-parses the whole `/c` string, so a

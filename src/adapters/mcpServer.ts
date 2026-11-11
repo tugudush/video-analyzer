@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Config } from '../config.js'
 import { loadOperationsForMcp } from './mcpTools.js'
-import { createLogger, setLogSink } from '../utils/logger.js'
+import { createLogger } from '../utils/logger.js'
 import { toVideoAnalyzerError } from '../utils/errors.js'
 import { sweepStaleTempDirs } from '../utils/fsUtils.js'
 import { VERSION } from '../version.js'
@@ -34,8 +34,6 @@ export interface McpServerHandle {
 
 /** Build an MCP server exposing the shared operation registry. */
 export function createMcpServer(config: Config): McpServerHandle {
-  const logger = createLogger(config.logLevel)
-
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -46,7 +44,7 @@ export function createMcpServer(config: Config): McpServerHandle {
 
   // MCP clients expect stdout to carry protocol frames only, so diagnostics are
   // forwarded through MCP logging notifications instead of console output.
-  setLogSink((level, message) => {
+  const logger = createLogger(config.logLevel, (level, message) => {
     void server
       .sendLoggingMessage({ level: level === 'warn' ? 'warning' : level, data: message })
       .catch(() => undefined)
@@ -94,7 +92,6 @@ export function createMcpServer(config: Config): McpServerHandle {
       logger.info(`${SERVER_NAME} MCP server ready (model: ${config.geminiModel}).`)
     },
     async close() {
-      setLogSink(undefined)
       await server.close()
     },
   }

@@ -4,16 +4,16 @@ import { createWriteStream } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
+import { Agent, fetch, type Response } from 'undici'
+import { runWithBounds } from '../utils/abort.js'
 import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 
 /**
- * Network helpers with best-effort SSRF protection.
+ * Network helpers with SSRF protection.
  *
- * Every hop of a redirect chain is validated, and DNS is resolved before the
- * connection is made. A determined attacker can still win a DNS-rebinding race
- * between the check and the connect, so this is defense in depth rather than a
- * cryptographic guarantee. Set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` to
- * deliberately allow private-network media.
+ * Each redirect is resolved and validated independently, then its connection
+ * uses only those addresses while retaining the original hostname for TLS.
+ * Set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` to allow private-network media.
  */
 
 const BLOCKED_HOSTNAMES = new Set([
@@ -164,10 +164,12 @@ export function redactedUrl(url: URL): string {
 }
 
 /** Validate that a URL is an http(s) URL pointing at a public address. */
-export async function assertSafeHttpUrl(
+async function resolveSafeHttpUrl(
   rawUrl: string,
   options: UrlSafetyOptions = {},
-): Promise<URL> {
+  signal?: AbortSignal,
+): Promise<{ url: URL; addresses: Array<{ address: string; family: number }> }> {
+  if (signal?.aborted) throw signal.reason
   let url: URL
   try {
     url = new URL(rawUrl)
@@ -192,9 +194,10 @@ export async function assertSafeHttpUrl(
 
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
 
-  if (options.allowPrivateHosts) return url
-
-  if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost')) {
+  if (
+    !options.allowPrivateHosts &&
+    (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost'))
+  ) {
     throw new VideoAnalyzerError('URL_REJECTED', `Refusing to contact ${hostname}.`, {
       hint: 'Set VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true to allow private-network hosts.',
     })
@@ -202,8 +205,15 @@ export async function assertSafeHttpUrl(
 
   let addresses: Array<{ address: string; family: number }>
   try {
-    addresses = await lookup(hostname, { all: true, verbatim: true })
+    addresses = await runWithBounds(() => lookup(hostname, { all: true, verbatim: true }), {
+      timeoutMs: 0,
+      ...(signal ? { signal } : {}),
+      onCancel: () =>
+        signal?.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError'),
+      onTimeout: () => new DOMException('Timed out', 'TimeoutError'),
+    })
   } catch {
+    if (signal?.aborted) throw signal.reason
     throw new VideoAnalyzerError('URL_REJECTED', `Could not resolve host: ${hostname}`)
   }
 
@@ -212,7 +222,7 @@ export async function assertSafeHttpUrl(
   }
 
   for (const entry of addresses) {
-    if (isPrivateAddress(entry.address)) {
+    if (!options.allowPrivateHosts && isPrivateAddress(entry.address)) {
       throw new VideoAnalyzerError(
         'URL_REJECTED',
         `Refusing to contact ${hostname}: ${entry.address} is a private or reserved address.`,
@@ -224,7 +234,15 @@ export async function assertSafeHttpUrl(
     }
   }
 
-  return url
+  return { url, addresses }
+}
+
+/** Validate that a URL is an http(s) URL pointing at a public address. */
+export async function assertSafeHttpUrl(
+  rawUrl: string,
+  options: UrlSafetyOptions = {},
+): Promise<URL> {
+  return (await resolveSafeHttpUrl(rawUrl, options)).url
 }
 
 export interface DownloadResult {
@@ -251,8 +269,6 @@ export async function downloadToFile(
   signals.push(AbortSignal.timeout(options.timeoutMs))
   const signal = signals.length === 1 ? (signals[0] as AbortSignal) : AbortSignal.any(signals)
 
-  let current = await assertSafeHttpUrl(url, options)
-
   /**
    * A cancelled download and an expired deadline both surface as an abort, but
    * neither is a network or disk failure, so they are classified before the
@@ -262,6 +278,7 @@ export async function downloadToFile(
   const classifyDownloadFailure = (
     error: unknown,
     stage: 'download' | 'write',
+    current?: URL,
   ): VideoAnalyzerError => {
     if (options.signal?.aborted) return operationCancelled({ cause: error })
 
@@ -272,130 +289,182 @@ export async function downloadToFile(
         `The download did not finish within ${options.timeoutMs} ms.`,
         {
           hint: 'The download budget is max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s). Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for large files or slow links.',
-          details: { timeoutMs: options.timeoutMs, url: redactedUrl(current), stage },
+          details: {
+            timeoutMs: options.timeoutMs,
+            ...(current ? { url: redactedUrl(current) } : {}),
+            stage,
+          },
           cause: error,
         },
       )
     }
 
     return stage === 'download'
-      ? new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to download ${redactedUrl(current)}`, {
-          hint: 'Check network access and that the URL is publicly reachable.',
-          cause: error,
-        })
+      ? new VideoAnalyzerError(
+          'DOWNLOAD_FAILED',
+          `Failed to download${current ? ` ${redactedUrl(current)}` : ''}`,
+          {
+            hint: 'Check network access and that the URL is publicly reachable.',
+            cause: error,
+          },
+        )
       : new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to write ${destPath}`, { cause: error })
   }
 
-  let response: Response | undefined
-
-  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-    let attempt: Response
+  const validate = async (rawUrl: string, previous?: URL) => {
     try {
-      attempt = await fetch(current, {
-        redirect: 'manual',
-        signal,
-        headers: { 'user-agent': 'video-analyzer' },
-      })
+      return await resolveSafeHttpUrl(rawUrl, options, signal)
     } catch (error) {
-      throw classifyDownloadFailure(error, 'download')
+      if (signal.aborted) throw classifyDownloadFailure(signal.reason, 'download', previous)
+      throw error
     }
-
-    if (attempt.status >= 300 && attempt.status < 400) {
-      const location = attempt.headers.get('location')
-      await attempt.body?.cancel().catch(() => undefined)
-      if (!location) {
-        throw new VideoAnalyzerError(
-          'DOWNLOAD_FAILED',
-          `Redirect without a Location header from ${redactedUrl(current)}`,
-        )
-      }
-      let next: URL
-      try {
-        next = new URL(location, current)
-      } catch (error) {
-        throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'Redirect has an invalid Location.', {
-          cause: error,
-        })
-      }
-      current = await assertSafeHttpUrl(next.href, options)
-      continue
-    }
-
-    response = attempt
-    break
   }
 
-  if (!response) {
-    throw new VideoAnalyzerError(
-      'DOWNLOAD_FAILED',
-      `Too many redirects while fetching ${redactedUrl(current)}`,
-      { hint: `More than ${MAX_REDIRECTS} redirects were followed.` },
-    )
-  }
-
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new VideoAnalyzerError(
-      'DOWNLOAD_FAILED',
-      `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
-      { details: { url: redactedUrl(current), status: response.status } },
-    )
-  }
-
-  const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN)
-  if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) {
-    await response.body?.cancel().catch(() => undefined)
-    throw new VideoAnalyzerError(
-      'DOWNLOAD_FAILED',
-      'Remote file exceeds the download size limit.',
-      {
-        hint: 'Raise VIDEO_ANALYZER_DOWNLOAD_MAX_MB to allow larger downloads.',
-        details: { declaredLength, maxBytes: options.maxBytes },
-      },
-    )
-  }
-
-  if (!response.body) {
-    throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'Download returned no body.')
-  }
-
-  const stream = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>)
-  let bytesWritten = 0
-  const hash = createHash('sha256')
-  const output = createWriteStream(destPath)
+  let resolved = await validate(url)
+  let current = resolved.url
+  let response: Response | undefined
+  let agent: Agent | undefined
 
   try {
-    await pipeline(
-      stream,
-      async function* (source: AsyncIterable<Buffer | Uint8Array>) {
-        for await (const chunk of source) {
-          bytesWritten += chunk.byteLength
-          if (bytesWritten > options.maxBytes) {
-            throw new VideoAnalyzerError(
-              'DOWNLOAD_FAILED',
-              'Remote file exceeded the download size limit while streaming.',
-              {
-                hint: 'Raise VIDEO_ANALYZER_DOWNLOAD_MAX_MB to allow larger downloads.',
-                details: { maxBytes: options.maxBytes },
-              },
-            )
-          }
-          hash.update(chunk)
-          yield chunk
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      let attempt: Response
+      const addresses = resolved.addresses
+      agent = new Agent({
+        connect: {
+          lookup: (_hostname, lookupOptions, callback) => {
+            const eligible = lookupOptions.family
+              ? addresses.filter((entry) => entry.family === lookupOptions.family)
+              : addresses
+            const first = eligible[0]
+            if (!first) {
+              callback(
+                Object.assign(new Error('No validated address for this family.'), {
+                  code: 'ENOTFOUND',
+                }),
+                '',
+              )
+            } else if (lookupOptions.all) {
+              callback(null, eligible)
+            } else {
+              callback(null, first.address, first.family)
+            }
+          },
+        },
+      })
+      try {
+        const request = {
+          redirect: 'manual' as const,
+          signal,
+          headers: { 'user-agent': 'video-analyzer' },
+          dispatcher: agent,
         }
-      },
-      output,
-    )
-  } catch (error) {
-    output.destroy()
-    if (error instanceof VideoAnalyzerError) throw error
-    throw classifyDownloadFailure(error, 'write')
-  }
+        attempt = await fetch(current, request)
+      } catch (error) {
+        throw classifyDownloadFailure(error, 'download', current)
+      }
 
-  return {
-    bytesWritten,
-    contentType: response.headers.get('content-type') ?? undefined,
-    finalUrl: current.href,
-    sha256: hash.digest('hex'),
+      if (attempt.status >= 300 && attempt.status < 400) {
+        const location = attempt.headers.get('location')
+        await attempt.body?.cancel().catch(() => undefined)
+        await agent.destroy()
+        agent = undefined
+        if (!location) {
+          throw new VideoAnalyzerError(
+            'DOWNLOAD_FAILED',
+            `Redirect without a Location header from ${redactedUrl(current)}`,
+          )
+        }
+        let next: URL
+        try {
+          next = new URL(location, current)
+        } catch (error) {
+          throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'Redirect has an invalid Location.', {
+            cause: error,
+          })
+        }
+        resolved = await validate(next.href, current)
+        current = resolved.url
+        continue
+      }
+
+      response = attempt
+      break
+    }
+
+    if (!response) {
+      throw new VideoAnalyzerError(
+        'DOWNLOAD_FAILED',
+        `Too many redirects while fetching ${redactedUrl(current)}`,
+        { hint: `More than ${MAX_REDIRECTS} redirects were followed.` },
+      )
+    }
+
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new VideoAnalyzerError(
+        'DOWNLOAD_FAILED',
+        `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
+        { details: { url: redactedUrl(current), status: response.status } },
+      )
+    }
+
+    const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN)
+    if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new VideoAnalyzerError(
+        'DOWNLOAD_FAILED',
+        'Remote file exceeds the download size limit.',
+        {
+          hint: 'Raise VIDEO_ANALYZER_DOWNLOAD_MAX_MB to allow larger downloads.',
+          details: { declaredLength, maxBytes: options.maxBytes },
+        },
+      )
+    }
+
+    if (!response.body) {
+      throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'Download returned no body.')
+    }
+
+    const stream = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>)
+    let bytesWritten = 0
+    const hash = createHash('sha256')
+    const output = createWriteStream(destPath)
+
+    try {
+      await pipeline(
+        stream,
+        async function* (source: AsyncIterable<Buffer | Uint8Array>) {
+          for await (const chunk of source) {
+            bytesWritten += chunk.byteLength
+            if (bytesWritten > options.maxBytes) {
+              throw new VideoAnalyzerError(
+                'DOWNLOAD_FAILED',
+                'Remote file exceeded the download size limit while streaming.',
+                {
+                  hint: 'Raise VIDEO_ANALYZER_DOWNLOAD_MAX_MB to allow larger downloads.',
+                  details: { maxBytes: options.maxBytes },
+                },
+              )
+            }
+            hash.update(chunk)
+            yield chunk
+          }
+        },
+        output,
+      )
+    } catch (error) {
+      output.destroy()
+      if (error instanceof VideoAnalyzerError) throw error
+      throw classifyDownloadFailure(error, 'write', current)
+    }
+
+    return {
+      bytesWritten,
+      contentType: response.headers.get('content-type') ?? undefined,
+      finalUrl: current.href,
+      sha256: hash.digest('hex'),
+    }
+  } finally {
+    await agent?.destroy()
   }
 }

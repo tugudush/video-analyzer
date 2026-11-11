@@ -10,6 +10,8 @@ export interface ExecuteOptions {
   logger?: Logger
 }
 
+const defaultLoggers = new WeakMap<Config, Logger>()
+
 /** Turn a Zod validation failure into an actionable, interface-neutral error. */
 export function zodErrorToInvalidInput(error: ZodError): Error {
   const issues = error.issues
@@ -53,7 +55,11 @@ export async function executeOperation<S extends z.ZodTypeAny>(
   config: Config,
   options: ExecuteOptions = {},
 ): Promise<OperationResult> {
-  const logger = options.logger ?? createLogger(config.logLevel)
+  let logger = options.logger ?? defaultLoggers.get(config)
+  if (!logger) {
+    logger = createLogger(config.logLevel)
+    defaultLoggers.set(config, logger)
+  }
   const ctx: OperationContext = {
     config,
     logger,

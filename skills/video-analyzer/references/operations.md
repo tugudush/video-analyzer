@@ -97,8 +97,9 @@ node ./scripts/invoke.mjs search_timestamp '{"videoPath":"./demo.mp4","query":"t
 Returns `data.matches[]` with `startSeconds`, optional `endSeconds`, and a
 `description`. When the model does not follow the `MATCH` format,
 `data.found` is `null` (unknown), `data.raw` holds its prose answer, and a
-warning is added. A parsed match has `data.found: true`; an explicit `NO_MATCH`
-has `data.found: false`.
+warning is added. A parsed match has `data.found: true`; only the standalone
+`NO_MATCH` marker has `data.found: false`. Extra prose, even after the marker,
+is returned as unknown rather than interpreted as a definite negative.
 
 Every result includes `data.durationSeconds`, and `data.raw` is always present for
 a no-match or unparsed answer so the model's own wording is not lost. A match whose

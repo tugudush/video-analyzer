@@ -127,20 +127,24 @@ describe('search_timestamp result shape', () => {
   it('reports the duration and the raw reply when nothing matches', async () => {
     const result = await searchTimestampOperation.run(
       { videoPath: source, query: 'a red car' },
-      createContext(createService('NO_MATCH — no red car appears in the clip.')),
+      createContext(createService('NO_MATCH')),
     )
 
     expect(result.data).toMatchObject({
       found: false,
       matches: [],
       durationSeconds: 20,
-      raw: 'NO_MATCH — no red car appears in the clip.',
+      raw: 'NO_MATCH',
     })
   })
 
   it.each([
     'I could not find a red car in the video.',
     'A red car may appear briefly, but I cannot determine when.',
+    'I cannot determine whether this occurs; do not conclude NO_MATCH.',
+    'The model mentioned "NO_MATCH" but did not reach a conclusion.',
+    'NO_MATCH — I cannot determine whether it occurs.',
+    'NO_MATCH — no red car appears in the clip.',
   ])('reports an unparseable reply as unknown: %s', async (reply) => {
     const result = await searchTimestampOperation.run(
       { videoPath: source, query: 'a red car' },

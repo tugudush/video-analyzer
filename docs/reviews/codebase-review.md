@@ -1,113 +1,158 @@
 # Codebase review
 
-Reviewed 2026-11-11 against commit `eedc752` on Windows. Scope: the shared
-operations, CLI and MCP adapters, Skill launcher, media and Gemini services,
-filesystem and network helpers, documentation, and relevant tests. This is a
-risk-focused review, not a security certification.
+## Remediation status — 2026-11-12
 
-## Resolution
+- The four P2 findings and the P3 documentation issue were fixed and covered by
+  regression tests. Timestamp results now require the standalone `NO_MATCH`
+  marker; explanations after it are deliberately treated as unknown, rather
+  than risking another false negative.
+- Download connections are pinned to each hop's validated DNS addresses while
+  preserving the URL hostname for HTTP and TLS.
+- The provider's documented upload retention and manual early-deletion policy
+  are now described in the README and Skill configuration reference. Automatic
+  deletion is not enabled because it would invalidate uploads shared by
+  concurrent requests; provider retention remains a privacy consideration.
+- The CI matrix recommendation is deferred. A live Gemini request was not
+  performed as part of this remediation.
+- `npm run check` passed on Windows with Node 22.23.4, 24.12.0, and 26.11.1
+  (299 tests passed and one platform-dependent test skipped on each). A local
+  HTTPS check also confirmed hostname/SNI preservation and certificate hostname
+  rejection with pinned DNS.
 
-The four findings below have been addressed. The original findings and evidence
-are retained for context.
+The findings and verification below describe the original review, before
+remediation; their source line references may have shifted.
 
-## Original findings
+Reviewed 2026-11-11 against commit `14b3b77` and the working tree. This is a
+correctness, reliability, and maintainability review, not a penetration test.
+No application code was changed.
 
-### P2 - Skill launcher can corrupt non-ASCII output
+## Summary
 
-[`invoke.mjs`](../../skills/video-analyzer/scripts/invoke.mjs) previously
-concatenated each stdout and stderr `Buffer` into a string independently. A
-UTF-8 character split across pipe chunks was decoded as replacement characters.
-This could silently corrupt transcripts, answers, and error messages.
+The project has a clear shared-core design: CLI and MCP adapters expose the same
+operation registry, and services isolate Gemini, FFmpeg, and media resolution.
+Schema validation, bounded frame extraction, explicit error codes, temporary
+directory ownership, and substantial unit and integration coverage are
+strengths.
 
-**Evidence:** A simulated CLI wrote `Café` with the two bytes of `é` in separate
-chunks; the launcher returned `Caf��`. No Gemini call was involved.
+Four reproducible issues merit attention: uncertain timestamp answers can become
+false negatives, the Skill drops successful CLI diagnostics, DNS resolution
+is outside download cancellation and deadlines, and embedded MCP servers share a
+global logging sink. A minor documentation count is also stale.
 
-**Recommendation:** Decode the streams incrementally with `setEncoding('utf8')`
-or a `StringDecoder`, or concatenate buffers before decoding. Add a launcher test
-that splits a multibyte character across writes.
+Severity: **P2** means a meaningful defect under the stated conditions; **P3**
+means a lower-impact defect.
 
-**Resolution:** Both streams use incremental UTF-8 decoding. A launcher regression
-test splits a character across writes to both stdout and stderr.
+## Findings
 
-### P2 - Unparseable timestamp responses report a positive match
+### P2 — An uncertain timestamp answer can become a definite negative
 
-When Gemini did not follow the expected format,
-[`searchTimestamp.ts`](../../src/operations/searchTimestamp.ts) returned an
-empty `matches` array but set `found: true`, even when the response said no
-event was found. Consumers using `found` could treat an unknown or negative
-result as a confirmed match.
+- **Evidence:** [`isNoMatch`](../../src/operations/searchTimestamp.ts#L79)
+  accepts `NO_MATCH` anywhere in a response with no parsed matches, and the
+  [result branch](../../src/operations/searchTimestamp.ts#L116) returns
+  `found: false`. Other unparseable answers correctly return `found: null`.
+- **Reproduced:** With a generated audio fixture and an injected Gemini service,
+  the response `I cannot determine whether this occurs; do not conclude
+NO_MATCH.` produced `No match found` and `found: false`.
+- **Impact:** A model explanation or refusal that mentions the marker can be
+  presented as evidence that the event did not occur, misleading downstream
+  clients and agents.
+- **Recommendation:** Treat only an unambiguous negative response as
+  `NO_MATCH`; preserve uncertain or malformed responses as `found: null`. Add
+  cases for quoted/negated markers and retain the intentionally supported
+  `NO_MATCH — explanation` form where appropriate.
 
-**Evidence:** With a generated one-second clip and a simulated provider response
-of `I could not find a red car in the video.`, the operation returned
-`found: true`, `matches: []`, and that text as the summary.
+### P2 — The Skill hides diagnostics from successful CLI runs
 
-**Recommendation:** Represent an unparseable response as unknown or return an
-explicit error rather than asserting a match. Keep the raw response and add tests
-for unstructured negative and ambiguous replies.
+- **Evidence:** The launcher
+  [captures stderr](../../skills/video-analyzer/scripts/invoke.mjs#L75) but
+  [forwards it only on a nonzero exit](../../skills/video-analyzer/scripts/invoke.mjs#L193).
+  Temporary cleanup failures are reported through
+  [`logger.warn`](../../src/utils/fsUtils.ts#L35), not the result envelope.
+- **Reproduced:** A successful CLI stub that wrote a JSON result to stdout and
+  `Warning: cleanup failed` to stderr yielded an empty launcher stderr.
+- **Impact:** Skill users can miss a failed cleanup and be unaware that
+  downloaded media remains on disk. Verbose progress and other successful-run
+  diagnostics are also lost. Operation warnings included in the JSON envelope
+  remain visible.
+- **Recommendation:** Forward successful child stderr as well, without mixing it
+  into JSON stdout; test successful warnings and cleanup-failure diagnostics.
 
-**Resolution:** Unparseable responses now use `found: null`, preserve the raw
-answer and warning, and are covered by negative and ambiguous response tests.
+### P2 — DNS resolution is not bounded by the download deadline or cancellation
 
-### P2 - Cancelling a Gemini poll leaves its timer alive
+- **Evidence:** [`downloadToFile`](../../src/utils/net.ts#L251) creates a timeout
+  signal, but awaits [`assertSafeHttpUrl`](../../src/utils/net.ts#L254) before
+  passing the signal to `fetch`. Its
+  [`lookup`](../../src/utils/net.ts#L205) has no cancellation or deadline;
+  [redirect validation](../../src/utils/net.ts#L320) has the same gap.
+- **Reproduced:** A controlled 300 ms DNS lookup, a 50 ms download timeout, and
+  cancellation after 10 ms returned `OPERATION_CANCELLED` only after about
+  329 ms. An already-cancelled request for a blocked loopback address returned
+  `URL_REJECTED` instead of cancellation.
+- **Impact:** Slow or stalled name resolution can delay cancellation and exceed
+  the advertised download budget; its error can also mask cancellation.
+- **Recommendation:** Apply the remaining deadline and caller cancellation to
+  every resolution/validation stage, classify their failures consistently, and
+  add delayed-DNS and pre-cancelled regression tests. Continue validating every
+  redirect.
 
-The default polling sleep in [`gemini.ts`](../../src/services/gemini.ts) used a
-normal timer. Cancellation rejected the wait but did not clear the timer. A
-short-lived CLI process could remain running until the poll interval or remaining
-upload budget expired, despite already reporting cancellation.
+### P2 — Embedded MCP servers do not isolate logging
 
-**Evidence:** With a simulated upload in `PROCESSING` and a two-second poll
-interval, cancellation was reported after 64 ms, but the Node process exited
-after approximately 2.3 seconds. Longer configured intervals extend the delay.
+- **Evidence:** Each [`createMcpServer`](../../src/adapters/mcpServer.ts#L36)
+  installs a process-global [`setLogSink`](../../src/utils/logger.ts#L33);
+  [closing any server](../../src/adapters/mcpServer.ts#L96) clears that global
+  sink. The server factory is part of the public embedding surface.
+- **Reproduced:** After creating servers A and B in one process, a logger
+  message associated with A was delivered to B's logging callback.
+- **Impact:** Multiple embedded servers, or an embedded server alongside other
+  users of the logger, can route diagnostics to the wrong client or lose MCP
+  logging when another server closes. Paths and operational details in
+  diagnostics can cross those boundaries.
+- **Recommendation:** Bind sinks to individual logger/server instances rather
+  than global state. Test two concurrent servers and closing either one.
 
-**Recommendation:** Use a cancellable sleep that clears its timer when the
-signal aborts. Test both prompt rejection and process/timer cleanup during a
-poll, including shared-upload cancellation.
+### P3 — FFmpeg skip count in development documentation is stale
 
-**Resolution:** Poll delays clear their timers on cancellation. Tests cover local
-uploads, the last shared-upload waiter, and a shared upload with another waiter.
+- **Evidence:** The [README](../../README.md#L330) says 11 integration tests
+  are skipped without FFmpeg. The current run contains
+  [24 local-media tests](../../tests/integration/localMedia.test.ts#L22) plus
+  [one MCP test](../../tests/integration/mcpServer.test.ts#L97) guarded by the
+  shared FFmpeg/ffprobe availability check.
+- **Impact:** Developers may underestimate how much integration coverage was
+  skipped on a machine without both binaries.
+- **Recommendation:** Update the count or avoid a fixed count and instruct
+  readers to inspect the test runner's skipped-test summary.
 
-### P2 - Scene detection scans and buffers past the frame budget
+## Additional risks and coverage gaps
 
-[`extractSceneFrames`](../../src/services/ffmpeg.ts) previously ran detection
-over the whole video and buffered FFmpeg's `showinfo` stderr before applying the
-configured limit. A long or frequently changing video could fail or consume
-substantial resources even when only a small number of frames was requested.
+- The README already correctly describes the
+  [DNS-rebinding window](../../src/utils/net.ts#L11): URL validation and the
+  eventual connection resolve separately. Treat the guard as defense in depth,
+  not a boundary against a determined attacker; consider connecting to a
+  validated address while preserving the original host and TLS verification.
+- Gemini upload cleanup removes local temporary media, but the
+  [Gemini API abstraction](../../src/services/gemini.ts#L36) has no remote
+  deletion operation; local files are uploaded on every request. Remote media
+  retention is therefore governed by the provider's file lifecycle, not local
+  cleanup. Document the retention policy and consider an explicit deletion
+  policy compatible with upload reuse.
+- Tests use injected or mocked Gemini APIs; this review did not make a live
+  provider request or validate the configured model, credentials, quotas, or
+  provider-side retention.
+- No tracked CI workflow was found in the repository. The checks below were run
+  on Windows with Node 26.11.1 and FFmpeg 9.0.2, not across the entire supported
+  Node 22+ range or all operating systems. A CI matrix with FFmpeg installed
+  would make those checks repeatable.
 
-**Evidence:** Code inspection: the first pass has no output-frame limit; the
-budget is applied only after the subprocess completes. This failure threshold
-was not reproduced with a large real video.
+## Verification
 
-**Recommendation:** Bound detection as well as extraction, for example by
-stopping after the budget plus one detected scene so `truncated` remains
-accurate. Add a test proving detection stops early when enough scenes exist.
+| Check                  | Result                                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------------------------- |
+| `npm test`             | Passed: 19 files, 287 tests passed, 1 skipped; FFmpeg integration tests ran.                        |
+| `npm run typecheck`    | Passed.                                                                                             |
+| `npm run lint`         | Passed.                                                                                             |
+| `npm run format:check` | Passed before this report was written.                                                              |
+| Targeted reproductions | Confirmed the four P2 behaviors described above using local fixtures, stubs, and injected services. |
 
-**Resolution:** Detection is limited to the budget plus one scene. Unit tests
-check the FFmpeg limits and truncation, and a real FFmpeg fixture checks both an
-exact fit and a truncated result. Inputs with fewer scene changes still require
-scanning to the end of the video. A simulated older FFmpeg verifies the legacy
-frame-sync fallback; that fallback was not tested with an older binary.
-
-## Validation and coverage
-
-- After the fixes, `npm run check` passed: typecheck, lint, build, tests, and
-  formatting. Vitest reported **287 passed, 1 skipped**; FFmpeg integration
-  tests ran.
-- The skipped test is the Windows symlink case requiring suitable privileges.
-- The Unicode and cancellation reproductions used local simulated processes or
-  provider responses. The timestamp reproduction used a generated local video
-  and simulated provider response. No live Gemini calls were made.
-- After cancellation with a five-second poll interval, a simulated upload
-  reported `OPERATION_CANCELLED` in 52 ms and the process exited in 323 ms.
-- The previous review's cleanup, Gemini finish-reason, stream-selection, and
-  numeric timestamp-description fixes are present; the suite covers those
-  regressions.
-
-## Strengths and remaining limitations
-
-- A shared registry and execution path support CLI/MCP parity, with contract and
-  integration coverage. Downloads enforce byte limits and validate redirects.
-- As documented in the [README](../../README.md), DNS validation is not pinned
-  to the connection; the network guard is defense in depth, not a complete SSRF
-  boundary. Model-generated timestamps are estimates and need verification.
-- Mocked provider tests do not establish live Gemini compatibility or output
-  quality. Generated frame artifacts persist on disk until manually removed.
+The single skipped test was platform/environment conditional. A passing suite
+does not establish that the live Gemini integration works or that every
+supported runtime has been exercised.

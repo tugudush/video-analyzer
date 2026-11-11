@@ -3,15 +3,17 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createMcpServer, type McpServerHandle } from '../../src/adapters/mcpServer.js'
 import { loadConfig } from '../../src/config.js'
 import { createSampleVideo, ffmpegAvailable } from '../helpers/media.js'
 
 const available = await ffmpegAvailable()
 
-async function connect(): Promise<{ handle: McpServerHandle; client: Client }> {
-  const handle = createMcpServer(loadConfig({ VIDEO_ANALYZER_LOG_LEVEL: 'silent' }))
+async function connect(
+  config = loadConfig({ VIDEO_ANALYZER_LOG_LEVEL: 'silent' }),
+): Promise<{ handle: McpServerHandle; client: Client }> {
+  const handle = createMcpServer(config)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await handle.server.connect(serverTransport)
 
@@ -19,6 +21,13 @@ async function connect(): Promise<{ handle: McpServerHandle; client: Client }> {
   await client.connect(clientTransport)
 
   return { handle, client }
+}
+
+function callMissing(target: Client) {
+  return target.callTool({
+    name: 'get_video_info',
+    arguments: { videoPath: path.join(tmpdir(), 'definitely-missing-video.mp4') },
+  })
 }
 
 describe('MCP adapter', () => {
@@ -91,6 +100,29 @@ describe('MCP adapter', () => {
       'generate_music',
     ]) {
       expect(names).not.toContain(forbidden)
+    }
+  })
+
+  it('keeps logging isolated between servers using the same config', async () => {
+    const config = loadConfig({ VIDEO_ANALYZER_LOG_LEVEL: 'debug' })
+    const first = await connect(config)
+    const second = await connect(config)
+    const firstLog = vi.spyOn(first.handle.server, 'sendLoggingMessage').mockResolvedValue()
+    const secondLog = vi.spyOn(second.handle.server, 'sendLoggingMessage').mockResolvedValue()
+    try {
+      await callMissing(first.client)
+      expect(firstLog).toHaveBeenCalled()
+      expect(secondLog).not.toHaveBeenCalled()
+
+      await first.client.close()
+      await first.handle.close()
+      await callMissing(second.client)
+      expect(secondLog).toHaveBeenCalled()
+    } finally {
+      await first.client.close()
+      await first.handle.close()
+      await second.client.close()
+      await second.handle.close()
     }
   })
 

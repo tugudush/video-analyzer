@@ -50,7 +50,8 @@ Cause and fix:
 ## URL_REJECTED
 
 The host resolves to a private, loopback, link-local, or metadata address, or
-the URL contains embedded credentials. This blocks SSRF attempts.
+the URL contains embedded credentials. This is a defense-in-depth SSRF guard,
+not a sandbox for untrusted media.
 
 If the media genuinely lives on the user's own network:
 

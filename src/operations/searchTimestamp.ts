@@ -77,7 +77,7 @@ export function parseTimestampMatches(text: string): TimestampMatch[] {
 }
 
 function isNoMatch(text: string): boolean {
-  return /\bNO_MATCH\b/i.test(text) && parseTimestampMatches(text).length === 0
+  return /^NO_MATCH$/i.test(text.trim())
 }
 
 export const searchTimestampOperation: Operation<typeof searchTimestampInput> = {

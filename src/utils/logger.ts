@@ -27,18 +27,11 @@ export interface Logger {
   error(message: string): void
 }
 
-let sink: LogSink | undefined
-
-/** Route diagnostics somewhere other than stderr (used by the MCP adapter). */
-export function setLogSink(next: LogSink | undefined): void {
-  sink = next
-}
-
 export function isLogLevel(value: string | undefined): value is LogLevel {
   return typeof value === 'string' && (LOG_LEVELS as readonly string[]).includes(value)
 }
 
-function write(level: Exclude<LogLevel, 'silent'>, message: string): void {
+function write(level: Exclude<LogLevel, 'silent'>, message: string, sink?: LogSink): void {
   if (sink) {
     try {
       sink(level, message)
@@ -50,23 +43,23 @@ function write(level: Exclude<LogLevel, 'silent'>, message: string): void {
   process.stderr.write(`${level.toUpperCase()} ${message}\n`)
 }
 
-export function createLogger(level: LogLevel = 'warn'): Logger {
+export function createLogger(level: LogLevel = 'warn', sink?: LogSink): Logger {
   const enabled = (candidate: Exclude<LogLevel, 'silent'>) =>
     LEVEL_RANK[level] >= LEVEL_RANK[candidate]
 
   return {
     level,
     debug(message) {
-      if (enabled('debug')) write('debug', message)
+      if (enabled('debug')) write('debug', message, sink)
     },
     info(message) {
-      if (enabled('info')) write('info', message)
+      if (enabled('info')) write('info', message, sink)
     },
     warn(message) {
-      if (enabled('warn')) write('warn', message)
+      if (enabled('warn')) write('warn', message, sink)
     },
     error(message) {
-      if (enabled('error')) write('error', message)
+      if (enabled('error')) write('error', message, sink)
     },
   }
 }

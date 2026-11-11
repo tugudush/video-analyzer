@@ -1,14 +1,20 @@
 import { readFile } from 'node:fs/promises'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createServer } from 'node:http'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { statForUpload } from '../../src/operations/shared.js'
 import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
 import { resolveMediaInput } from '../../src/services/mediaInput.js'
 import { createLogger } from '../../src/utils/logger.js'
+import { downloadToFile } from '../../src/utils/net.js'
 
-const mocks = vi.hoisted(() => ({ lookup: vi.fn(), execFile: vi.fn() }))
+const mocks = vi.hoisted(() => ({ lookup: vi.fn(), execFile: vi.fn(), fetch: vi.fn() }))
 
 vi.mock('node:dns/promises', () => ({ lookup: mocks.lookup }))
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('undici')>()),
+  fetch: mocks.fetch,
+}))
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   execFile: mocks.execFile,
@@ -30,18 +36,13 @@ describe('remote media input policy', () => {
     VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS: 'true',
   })
   const smallLimitConfig = loadConfig({ VIDEO_ANALYZER_DOWNLOAD_MAX_MB: '1' })
-  const fetchMock = vi.fn()
+  const fetchMock = mocks.fetch
 
   beforeEach(() => {
     mocks.lookup.mockReset()
     mocks.execFile.mockReset()
     fetchMock.mockReset()
     mocks.lookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }])
-    vi.stubGlobal('fetch', fetchMock)
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
   })
 
   it('does not send a known platform page to the external downloader', async () => {
@@ -156,6 +157,88 @@ describe('remote media input policy', () => {
       await media.cleanup()
     }
     expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('pins each redirect connection to its validated DNS result', async () => {
+    const undici = await vi.importActual<typeof import('undici')>('undici')
+    fetchMock.mockImplementation(undici.fetch)
+    const requests: string[] = []
+    const server = createServer((request, response) => {
+      requests.push(`${request.headers.host}${request.url}`)
+      if (request.url === '/start') {
+        response.writeHead(302, { location: `http://second.example:${port}/media.mp4` })
+        response.end()
+      } else {
+        response.writeHead(200, { 'content-type': 'video/mp4' })
+        response.end('media')
+      }
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server did not bind')
+    const port = address.port
+    mocks.lookup.mockReset()
+    mocks.lookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }])
+    mocks.lookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }])
+    mocks.lookup.mockResolvedValue([{ address: '127.0.0.2', family: 4 }])
+    try {
+      const media = await resolveMediaInput(`http://first.example:${port}/start`, privateConfig)
+      try {
+        expect(await readFile(media.path, 'utf8')).toBe('media')
+        expect(requests).toEqual([
+          `first.example:${port}/start`,
+          `second.example:${port}/media.mp4`,
+        ])
+        expect(mocks.lookup).toHaveBeenCalledTimes(2)
+      } finally {
+        await media.cleanup()
+      }
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it('cancels a stalled DNS lookup without waiting for it', async () => {
+    mocks.lookup.mockImplementation(() => new Promise(() => undefined))
+    const controller = new AbortController()
+    const pending = downloadToFile('http://stalled.example/media.mp4', 'unused', {
+      maxBytes: 100,
+      timeoutMs: 5_000,
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('enforces the download timeout during redirect DNS validation', async () => {
+    mocks.lookup
+      .mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
+      .mockImplementationOnce(() => new Promise(() => undefined))
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'http://stalled.example/media' } }),
+    )
+    await expect(
+      downloadToFile('http://first.example/media', 'unused', { maxBytes: 100, timeoutMs: 30 }),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringContaining('did not finish within 30 ms'),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('classifies a pre-cancelled download before resolving its host', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      downloadToFile('http://127.0.0.1/media', 'unused', {
+        maxBytes: 100,
+        timeoutMs: 1000,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(mocks.lookup).not.toHaveBeenCalled()
   })
 
   it('permits a private redirect only with opt-in, without enabling HTML fallback', async () => {

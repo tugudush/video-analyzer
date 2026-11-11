@@ -76,6 +76,12 @@ Get a key from <https://aistudio.google.com/app/apikey>.
 Local operations (`get_video_info`, `extract_frames`)
 work without it.
 
+Gemini's [Files API](https://aistudio.google.com/docs/file-input-methods)
+documents 48-hour retention for uploaded files. This tool does not delete
+remote uploads; use the [Files API](https://aistudio.google.com/api-reference/files)
+to list or delete them earlier. An upload deleted externally will no longer be
+reused. Local temporary-file cleanup does not delete the provider's copy.
+
 ## Model
 
 | Variable       | Default            | Purpose                                                       |

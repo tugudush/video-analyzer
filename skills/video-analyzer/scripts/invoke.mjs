@@ -191,9 +191,7 @@ try {
   }
 
   process.stdout.write(result.stdout)
-  if (result.code !== 0) {
-    process.stderr.write(result.stderr)
-  }
+  if (result.stderr) process.stderr.write(result.stderr)
   process.exitCode = result.code
 } finally {
   await cleanupPayload()
