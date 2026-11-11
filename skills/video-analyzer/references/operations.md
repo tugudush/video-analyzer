@@ -113,6 +113,7 @@ Plain-text speech-to-text.
 | `language`           | string  | no       | Hint such as `"Spanish"` or `"es-ES"`              |
 | `translateToEnglish` | boolean | no       | Return English instead of the source language      |
 | `outputPath`         | string  | no       | Also write a `.txt` file (parent dirs are created) |
+| `overwrite`          | boolean | no       | Replace an existing `outputPath` (default `false`) |
 
 ```bash
 node ./scripts/invoke.mjs transcribe_video '{"videoPath":"./interview.mp4","outputPath":"./interview.txt"}'
@@ -123,6 +124,12 @@ Limitations, by design:
 - no speaker diarization
 - no word-level timings
 - `.srt` / `.vtt` output paths are rejected rather than filled with invented cues
+
+`outputPath` is validated before the upload starts. It may never refer to the source
+media, including through symlinks or hard links, and an existing file is only replaced
+when `overwrite: true` is passed. It accepts a local path or a `file://` URI, and
+missing parent directories are created. `overwrite` only applies when `outputPath` is
+set, so re-running an example that writes to the same `.txt` needs `overwrite: true`.
 
 If nothing is spoken, `data.noSpeech` is `true` and the summary says so.
 
