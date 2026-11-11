@@ -286,6 +286,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Timestamps are estimates.** `search_timestamp` reflects Gemini's internal sampling. Confirm with `extract_frames` before cutting.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
+- **MCP inlines extracted frames.** `extract_frames` embeds JPEGs in the MCP tool result up to a ~2 MB base64 budget per call; frames past the budget are reported by path instead. The CLI returns paths only.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
 - **Frame extraction writes to disk.** Returned image paths persist until you delete them. By default they go into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.

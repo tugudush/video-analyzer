@@ -69,6 +69,18 @@ describe('parseTimestampMatches', () => {
   it('keeps a placeholder description when the line has none', () => {
     expect(parseTimestampMatches('MATCH 3')[0]?.description).toBe('No description provided.')
   })
+
+  /**
+   * A description that starts with a number parses as the end of a range, which
+   * must not be surfaced as an inverted span ("42 – 3") to the caller.
+   */
+  it('drops an end that is not after the start', () => {
+    expect(parseTimestampMatches('MATCH 42 — 3 speakers appear on screen')).toEqual([
+      { startSeconds: 42, description: 'speakers appear on screen' },
+    ])
+    expect(parseTimestampMatches('MATCH 10 to 5 — backwards range')[0]?.endSeconds).toBeUndefined()
+    expect(parseTimestampMatches('MATCH 7 7 — zero length')[0]?.endSeconds).toBeUndefined()
+  })
 })
 
 function createService(reply: string): GeminiMediaService {
@@ -128,6 +140,20 @@ describe('search_timestamp result shape', () => {
     const result = await searchTimestampOperation.run(
       { videoPath: source, query: 'a red car' },
       createContext(createService('MATCH 999 1000 — a red car passes the camera')),
+    )
+
+    expect(result.data).toMatchObject({ found: true, durationSeconds: 20 })
+    expect(result.warnings?.join(' ')).toContain('beyond the 00:00:20.000 clip')
+  })
+
+  /**
+   * Only the range that closes inside the clip is usable, so an end past the
+   * duration has to be flagged the same way an impossible start is.
+   */
+  it('warns when a range ends past the end of the clip', async () => {
+    const result = await searchTimestampOperation.run(
+      { videoPath: source, query: 'a red car' },
+      createContext(createService('MATCH 5 30 — a red car passes the camera')),
     )
 
     expect(result.data).toMatchObject({ found: true, durationSeconds: 20 })

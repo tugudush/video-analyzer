@@ -268,13 +268,6 @@ export async function runCli(
   io: CliIO = defaultCliIO,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
-  let config: Config
-  try {
-    config = loadConfig(env)
-  } catch (error) {
-    return writeError(io, toErrorEnvelope(error), false)
-  }
-
   let parsed: ParsedArgs
   try {
     parsed = parseArgs(argv)
@@ -282,6 +275,10 @@ export async function runCli(
     return writeError(io, toErrorEnvelope(error), false)
   }
 
+  // Version, help, and list are diagnostics, not work: they must keep answering
+  // when configuration is malformed, because "help <operation>" is the
+  // documented recovery step for a rejected request. Configuration is loaded
+  // below, and only for the branches that consume it.
   if (parsed.version) {
     io.stdout(`${VERSION}\n`)
     return 0
@@ -320,6 +317,13 @@ export async function runCli(
       ) + '\n',
     )
     return 0
+  }
+
+  let config: Config
+  try {
+    config = loadConfig(env)
+  } catch (error) {
+    return writeError(io, toErrorEnvelope(error), false)
   }
 
   if (parsed.command === 'mcp') {

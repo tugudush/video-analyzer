@@ -14,10 +14,12 @@ Three P3 issues and six P4 issues remain. None of them corrupts data or opens a 
 - `search_timestamp` will happily relay an inverted time range,
 - the MCP interface inlines multi-megabyte image payloads by default.
 
+> **Updated 2026-11-11.** Findings 1–3 (the three P3s) have since been fixed; see [Resolution Status](#resolution-status). Findings 4–9 remain open.
+
 ## Method
 
 - Read every source file, every test suite, the Skill package and its three reference documents, the README, and the build/lint/test configuration. Compared each documented operation, setting, error code, limit, and exit behaviour against the implementation.
-- Ran the full gate: `npm run check` (build → typecheck → oxlint → vitest → prettier). **Green** — `tsc --noEmit` clean, oxlint clean, **225 passed / 1 skipped** across 19 files in ~6 s, Prettier clean.
+- Ran the full gate: `npm run check` (build → typecheck → oxlint → vitest → prettier). **Green** — `tsc --noEmit` clean, oxlint clean, **225 passed / 1 skipped** across 19 files in ~6 s at review time (229 / 1 after the resolutions below), Prettier clean.
 - Re-ran the suite with `FFMPEG_PATH`/`FFPROBE_PATH` pointing at missing binaries: **214 passed / 12 skipped (226)**, i.e. the eleven ffmpeg-dependent skips the README documents plus the always-skipped Windows symlink case.
 - Generated a 6 s H.264/AAC clip with ffmpeg and drove the built `dist/cli.js` for every probe below (all in the OS temp directory, except where noted).
 
@@ -197,7 +199,7 @@ The network boundary remains the strongest part of the codebase.
 
 ## Test Assessment
 
-225 passing, 1 skipped, ~6 s — fast enough to run on every save, and the assertions are specific rather than snapshot-shaped.
+225 passing, 1 skipped, ~6 s at review time (229 / 1 after the resolutions) — fast enough to run on every save, and the assertions are specific rather than snapshot-shaped.
 
 | Area                         | Coverage | Notes                                                                                                                                                                                 |
 | ---------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -211,10 +213,12 @@ The network boundary remains the strongest part of the codebase.
 
 **Gaps introduced by this review's findings**
 
-- no test that `--version` / `help` survive a malformed environment (finding 1),
-- no test for `endSeconds` ordering or an out-of-range end (finding 2),
+- ~~no test that `--version` / `help` survive a malformed environment (finding 1)~~,
+- ~~no test for `endSeconds` ordering or an out-of-range end (finding 2)~~,
 - no assertion about the zero-frame branch — neither the directory nor the `data.frames` key (finding 4),
 - `net.test.ts` does not cover 6to4, IPv4-compatible, or site-local IPv6, nor a short body against a larger `Content-Length` (findings 6 and 7).
+
+The struck-through gaps were closed with the resolutions (four new tests); 4, 6, and 7 are still outstanding.
 
 **Other gaps**
 
@@ -253,11 +257,33 @@ FFPROBE_PATH=C:\definitely\missing\ffprobe.exe                              → 
 spawn(ComSpec, [...,'/c','shim.cmd','help','x&echo MARKER'])                 → argv arrived quoted, no shell injection
 ```
 
+## Resolution Status
+
+Findings 1–3 were fixed on 2026-11-11, in a follow-up commit. Findings 4–9 remain open.
+
+| #   | Resolution                                                                                                                                                                                                                                                                                                                                   |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `runCli` now parses argv first and defers `loadConfig` until after the `--version`, `help`, and `list` branches, so the diagnostic commands answer even when a setting is malformed. Operations and `mcp` still fail with `INVALID_INPUT` naming the setting. Covered by a new `cli.test.ts` case.                                           |
+| 2   | `parseTimestampMatches` drops an end that is not after the start (an inverted or zero-length range is not a range), and the operation's duration check now covers `endSeconds` as well as `startSeconds`. Two parser tests and one operation test pin it; `operations.md` describes both rules.                                              |
+| 3   | `loadImages` inlines the first frame and then stops at a 2 MB base64 budget (`INLINE_IMAGE_BUDGET_BYTES`); `mcpTools` reports the remaining frames as a text block with their paths, so nothing is lost. The CLI path is unchanged (paths only). Covered by a new `mcpTools.test.ts` case, and documented in `operations.md` and the README. |
+
+Re-verified against the rebuilt `dist/`:
+
+```text
+VIDEO_ANALYZER_REQUEST_TIMEOUT_MS=not-a-number node dist/cli.js --version   → 0.1.0, exit 0
+… node dist/cli.js help extract_frames                                      → operation schema, exit 0
+… node dist/cli.js list                                                     → { ok: true, operations: [...] }, exit 0
+… node dist/cli.js get_video_info --input …                                 → INVALID_INPUT naming the setting
+parseTimestampMatches('MATCH 42 — 3 speakers appear')                       → start 42, no endSeconds
+search_timestamp 'MATCH 5 30 — …' on a 20 s clip                            → warning about the 00:00:20.000 clip (unit test)
+extract_frames over MCP, 20 noise frames at 1280 px                         → 3 inlined (1.88 MB base64), 17 reported by path
+```
+
 ## Recommendations
 
-1. **Make the diagnostic commands configuration-independent.** Moving `loadConfig` behind the branches that need it is a two-line change that removes an entire class of dead ends, and the same shape protects `list` and the MCP startup message.
-2. **Treat model output as untrusted input at the parse boundary.** `search_timestamp` already has the parser and the warning channel; validating `endSeconds` there is cheaper than explaining an inverted range to a user.
-3. **Give the MCP image path a budget.** The default page size was chosen for a filesystem, not for JSON-RPC. Either shrink the default for MCP, cap cumulative bytes, or return links — and state the cost in `operations.md`.
+1. ~~**Make the diagnostic commands configuration-independent.**~~ Done — see Resolution Status 1. The same shape protects `list` and the MCP startup message.
+2. ~~**Treat model output as untrusted input at the parse boundary.**~~ Done for `endSeconds` — see Resolution Status 2.
+3. ~~**Give the MCP image path a budget.**~~ Done — see Resolution Status 3.
 4. **Close the two small hardening gaps while they are one-line checks:** the remaining IPv6 encodings in `isPrivateAddress` and the `Content-Length` comparison on download.
 5. **Add CI.** One matrixed workflow running `npm run check` with ffmpeg installed pins the build, the Windows shim path, and the integration tests together; echo the skip count so a skipped run is visible.
 6. **Keep the invariants that already work.** Single registry, closed error-code union, `.env` allowlist, one artifact directory per request, `execFile` with argument arrays. Each of them has already prevented a class of bug, and the findings above are all places where a branch drifted a little away from one.

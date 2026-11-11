@@ -64,7 +64,10 @@ export function parseTimestampMatches(text: string): TimestampMatch[] {
 
     matches.push({
       startSeconds: start,
-      ...(end !== undefined && Number.isFinite(end) ? { endSeconds: end } : {}),
+      // An end at or before the start is not a range. A description that itself
+      // begins with a number ("MATCH 42 — 3 speakers appear") parses as an end,
+      // and reporting 42–3 would be worse than reporting 42 alone.
+      ...(end !== undefined && Number.isFinite(end) && end > start ? { endSeconds: end } : {}),
       description: description || 'No description provided.',
     })
   }
@@ -141,9 +144,14 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
       }
 
       // A model reply is not validated against the media length, so an obviously
-      // impossible estimate is flagged instead of being presented as a real moment.
+      // impossible estimate is flagged instead of being presented as a real
+      // moment. The end of a range is checked too: a range that closes past the
+      // clip is just as impossible as one that starts past it.
       const beyondDuration = matches.filter(
-        (match) => durationSeconds > 0 && match.startSeconds > durationSeconds,
+        (match) =>
+          durationSeconds > 0 &&
+          (match.startSeconds > durationSeconds ||
+            (match.endSeconds !== undefined && match.endSeconds > durationSeconds)),
       )
       if (beyondDuration.length > 0) {
         warnings.push(

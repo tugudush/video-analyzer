@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { createLogger } from '../../src/utils/logger.js'
@@ -51,5 +54,46 @@ describe('loadOperationsForMcp', () => {
       code: 'INVALID_INPUT',
     })
     expect(executeOperation).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A frame page is the only result that can grow to megabytes. Frames beyond the
+   * inline budget must still be reported, by path, so the caller can read them.
+   */
+  it('stops inlining frames at the budget and reports the rest by path', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'va-mcp-images-'))
+    try {
+      const paths: string[] = []
+      for (let index = 0; index < 3; index++) {
+        const target = path.join(dir, `frame-${String(index).padStart(4, '0')}.jpg`)
+        // ~1 MB each: one fits the 2 MB base64 budget, the second does not.
+        await writeFile(target, Buffer.alloc(1_000_000, index + 1))
+        paths.push(target)
+      }
+
+      executeOperation.mockResolvedValue({
+        summary: 'frames',
+        images: paths.map((framePath) => ({
+          path: framePath,
+          mimeType: 'image/jpeg',
+          label: path.basename(framePath),
+        })),
+      })
+
+      const result = await tool('extract_frames').invoke({ videoPath: '/media/demo.mp4' })
+
+      const inlined = result.content.filter((part) => part.type === 'image')
+      expect(inlined).toHaveLength(1)
+
+      const text = result.content
+        .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n')
+      expect(text).toContain('2 frame(s) were not inlined')
+      expect(text).toContain(paths[1] as string)
+      expect(text).toContain(paths[2] as string)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

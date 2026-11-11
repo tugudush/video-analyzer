@@ -4,7 +4,8 @@ import type { Config } from '../config.js'
 import { listOperations } from '../operations/registry.js'
 import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
 import type { Logger } from '../utils/logger.js'
-import { loadImages } from './envelope.js'
+import { formatBytes } from '../operations/shared.js'
+import { INLINE_IMAGE_BUDGET_BYTES, loadImages } from './envelope.js'
 
 export interface McpToolDescriptor {
   name: string
@@ -37,12 +38,27 @@ async function toCallToolResult(
     content.push({ type: 'text', text: `Saved ${artifact.kind}: ${artifact.path}` })
   }
 
-  for (const image of await loadImages(result)) {
+  const { images, skipped } = await loadImages(result)
+
+  for (const image of images) {
     content.push({
       type: 'image',
       data: image.base64,
       mimeType: image.mimeType,
     } as CallToolResult['content'][number])
+  }
+
+  if (skipped.length > 0) {
+    content.push({
+      type: 'text',
+      text: [
+        `${skipped.length} frame(s) were not inlined: this result exceeded the ${formatBytes(INLINE_IMAGE_BUDGET_BYTES)} inline image budget. Their files are on disk, or request a smaller page with maxImages:`,
+        ...skipped.map(
+          (image) =>
+            `- ${image.path} (${formatBytes(image.sizeBytes)}${image.label ? `, ${image.label}` : ''})`,
+        ),
+      ].join('\n'),
+    })
   }
 
   return { content }

@@ -187,6 +187,27 @@ describe('runCli', () => {
     )
   })
 
+  /**
+   * `help <operation>` is the documented way out of a rejected request, so a bad
+   * setting must not disable it — otherwise the only remaining advice is the one
+   * that no longer works.
+   */
+  it('keeps version, help, and list working when a setting is malformed', async () => {
+    const badEnv = { VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: 'not-a-number' }
+
+    const version = capture()
+    expect(await runCli(['--version'], version.io, badEnv)).toBe(0)
+    expect(version.stdoutText().trim()).toBe(VERSION)
+
+    const help = capture()
+    expect(await runCli(['help', 'get_video_info'], help.io, badEnv)).toBe(0)
+    expect(help.stdoutText()).toContain('videoPath')
+
+    const list = capture()
+    expect(await runCli(['list'], list.io, badEnv)).toBe(0)
+    expect(list.stdoutText()).toContain('analyze_video')
+  })
+
   it('installs Ctrl-C cancellation around the operation and removes it afterwards', async () => {
     const { io } = capture()
     let installed: (() => void) | undefined

@@ -100,8 +100,9 @@ Returns `data.matches[]` with `startSeconds`, optional `endSeconds`, and a
 
 Every result includes `data.durationSeconds`, and `data.raw` is always present for
 a no-match or unparsed answer so the model's own wording is not lost. A match whose
-start is past the end of the clip cannot be real, so it is reported with a warning
-rather than silently trusted.
+start, or whose range end, is past the end of the clip cannot be real, so it is
+reported with a warning rather than silently trusted. An end at or before its start
+is not a range and is reported as a single timestamp.
 
 Reads `NO_MATCH` as "not found". Always relay the estimate warning.
 Verify a candidate time with `extract_frames` before cutting anything.
@@ -189,6 +190,12 @@ node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"inte
 
 `images[]` lists every returned JPEG with an absolute `path` and a `t=` label
 where a timestamp is known. `data.hasMore` indicates another page exists.
+
+Over MCP the frames are returned as inline image content, capped at about 2 MB of
+base64 per result — roughly 10–15 frames of typical footage. Frames past the cap
+are not dropped: the result lists their paths in a text block instead, and the
+CLI envelope always carries paths only. Lower `maxImages` when every frame has to
+be inline.
 
 `interval` mode stops at the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`, default
 100, hard ceiling 500) while ffmpeg is writing, starting from `t=0`. When the
