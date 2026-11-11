@@ -17,11 +17,21 @@ export interface CliIO {
    * tests so an interactive or empty stdin can never block execution.
    */
   readStdin?(): Promise<string | undefined>
+  /**
+   * Optional cancellation source. The real CLI aborts the running operation on
+   * Ctrl-C; tests omit it so a stray signal in the runner can never fire mid-case.
+   * Returns a disposer that removes the listener again.
+   */
+  onCancel?(handler: () => void): () => void
 }
 
 export const defaultCliIO: CliIO = {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
+  onCancel: (handler) => {
+    process.once('SIGINT', handler)
+    return () => process.removeListener('SIGINT', handler)
+  },
   readStdin: async () => {
     if (process.stdin.isTTY) return undefined
     const chunks: Buffer[] = []
@@ -231,14 +241,19 @@ export async function runCli(
     }
 
     const logger = createLogger(config.logLevel)
+    // Ctrl-C aborts the in-flight request instead of killing the process, so the
+    // operation reports GEMINI_TIMEOUT and the envelope still reaches the caller.
+    const controller = new AbortController()
+    const disposeCancel = io.onCancel?.(() => controller.abort())
     const result = await executeOperation(operation, input, config, {
       logger,
+      signal: controller.signal,
       onProgress: (message) => {
         if (config.logLevel === 'debug' || config.logLevel === 'info') {
           io.stderr(`… ${message}\n`)
         }
       },
-    })
+    }).finally(() => disposeCancel?.())
 
     const envelope = { operation: operation.name, ...toResultEnvelope(result) }
     io.stdout(JSON.stringify(envelope, null, parsed.pretty ? 2 : undefined) + '\n')
