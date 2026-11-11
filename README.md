@@ -39,19 +39,19 @@ git clone <repo-url>
 cd video-analyzer
 npm install
 npm run build
-npm link        # optional: puts `video-analyzer` and `video-analyzer-mcp` on PATH
+npm install -g .  # optional: puts `video-analyzer` and `video-analyzer-mcp` on PATH
 ```
 
-Without `npm link`, use `node /path/to/video-analyzer/dist/cli.js` wherever this document shows `video-analyzer`.
+Without a global install, use `node /path/to/video-analyzer/dist/cli.js` wherever this document shows `video-analyzer`.
 
 What you actually need depends on how you use the package:
 
-| Setup                                                                            | `npm install` | `npm run build` | `npm link` |
-| -------------------------------------------------------------------------------- | ------------- | --------------- | ---------- |
-| MCP server                                                                       | yes           | yes             | no         |
-| Skill kept in this repo (`skills/video-analyzer`)                                | yes           | yes             | no         |
-| Skill copied to a user-level folder (`~/.copilot/skills`, `~/.claude/skills`, …) | yes           | yes             | **yes**    |
-| Skill copied to a user-level folder, with `VIDEO_ANALYZER_CLI_PATH` set          | yes           | yes             | no         |
+| Setup                                                                            | `npm install` | `npm run build` | Global  |
+| -------------------------------------------------------------------------------- | ------------- | --------------- | ------- |
+| MCP server                                                                       | yes           | yes             | no      |
+| Skill kept in this repo (`skills/video-analyzer`)                                | yes           | yes             | no      |
+| Skill copied to a user-level folder (`~/.copilot/skills`, `~/.claude/skills`, …) | yes           | yes             | **yes** |
+| Skill copied to a user-level folder, with `VIDEO_ANALYZER_CLI_PATH` set          | yes           | yes             | no      |
 
 `npm run build` is never skippable: `dist/cli.js` and `dist/mcp.js` are compiler output and are not checked in.
 
@@ -122,9 +122,13 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    # Claude Code — personal
    mkdir -p ~/.claude/skills
    cp -r skills/video-analyzer ~/.claude/skills/
+
+   # Agent-agnostic — personal (read by Copilot, Cursor, Codex, and OpenCode; not by Claude Code or Antigravity)
+   mkdir -p ~/.agents/skills
+   cp -r skills/video-analyzer ~/.agents/skills/
    ```
 
-   Agent-agnostic locations also work: `.agents/skills/` (project) and `~/.agents/skills/` (personal).
+   `.agents/skills/` (project) is read by Copilot, Cursor, Codex, OpenCode, and Antigravity. `~/.agents/skills/` (personal) is read by Copilot, Cursor, Codex, and OpenCode, but not by Claude Code or Antigravity.
 
    **User-level (global) installs need one extra command.** A Skill copied into `~/.copilot/skills` or `~/.claude/skills` no longer sits next to `dist/cli.js`, so the launcher falls back to a `video-analyzer` command on `PATH`. Build the CLI, then expose it:
 
@@ -132,10 +136,10 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    # Run inside the repo clone
    npm install
    npm run build
-   npm link            # or: npm install -g .
+   npm install -g .    # or: npm link
    ```
 
-   The linked command points back at the checkout, so keep the clone (at least `dist/` and `node_modules/`) in place — deleting it breaks the global `video-analyzer` binary.
+   The global command points back at the checkout, so keep the clone (at least `dist/` and `node_modules/`) in place — deleting it breaks the global `video-analyzer` binary. To remove it, run `npm uninstall -g video-analyzer` (or `npm unlink -g video-analyzer` after `npm link`).
 
    If you would rather not install a global command, set `VIDEO_ANALYZER_CLI_PATH` in step 3 instead. That still requires `npm install` and `npm run build`, because `dist/cli.js` loads its dependencies from the checkout's `node_modules/`.
 
