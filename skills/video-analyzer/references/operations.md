@@ -15,7 +15,8 @@ backslashes. Add `--pretty` for readable JSON output.
 - an absolute or relative local path
 - a `file://` URI
 - a direct `http(s)` media URL
-- a platform URL supported by `yt-dlp` (YouTube, Vimeo, TikTok, Bilibili, …)
+
+Platform page downloads and yt-dlp fallback are disabled; use a local file or a direct media URL.
 
 ## Response Envelope
 

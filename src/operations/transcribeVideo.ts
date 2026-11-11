@@ -10,7 +10,7 @@ export const transcribeVideoInput = z.object({
     .string()
     .min(1)
     .describe(
-      'Local path, file:// URI, direct http(s) media URL, or a platform URL supported by yt-dlp. Accepts video or audio files.',
+      'Local path, file:// URI, or direct http(s) media URL. Accepts video or audio files.',
     ),
   language: z
     .string()

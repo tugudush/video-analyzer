@@ -61,8 +61,8 @@ Environment:
   VIDEO_ANALYZER_DOWNLOAD_MAX_MB     Remote download size limit
   VIDEO_ANALYZER_REQUEST_TIMEOUT_MS  AI request timeout
   VIDEO_ANALYZER_OUTPUT_DIR          Base directory for generated artifacts
+  VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS Allow private/loopback direct media hosts
   VIDEO_ANALYZER_LOG_LEVEL           silent|error|warn|info|debug
-  YT_DLP_PATH / YT_DLP_MAX_RESOLUTION / YT_DLP_COOKIES_FILE / YT_DLP_IMPERSONATE
   FFMPEG_PATH / FFPROBE_PATH
 `
 

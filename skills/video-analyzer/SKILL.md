@@ -1,12 +1,12 @@
 ---
 name: video-analyzer
-description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, extract frames, and redact sensitive screen regions. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", "grab a frame at 30s", or "blur the API key in this recording". Works on local paths, file:// URIs, direct http(s) URLs, and platform URLs supported by yt-dlp. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
+description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, extract frames, and redact sensitive screen regions. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", "grab a frame at 30s", or "blur the API key in this recording". Works on local paths, file:// URIs, and direct http(s) media URLs. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
 argument-hint: 'A video path or URL plus what you want to know about it'
 ---
 
 # Video Analyzer
 
-Answer questions about video and audio files by running the bundled `video-analyzer` CLI. The CLI calls Gemini for AI work and FFmpeg/yt-dlp for local media work.
+Answer questions about video and audio files by running the bundled `video-analyzer` CLI. The CLI calls Gemini for AI work and FFmpeg for local media work.
 
 **This skill does not need an MCP server.** It invokes the CLI directly.
 
@@ -28,9 +28,9 @@ Do **not** use it for:
 
 ## Before You Start
 
-1. Confirm the user gave a usable input: a path, `file://` URI, direct `http(s)` URL, or platform URL.
+1. Confirm the user gave a usable input: a path, `file://` URI, or direct `http(s)` media URL. Platform page downloads are disabled.
 2. AI operations need `GEMINI_API_KEY`. Local operations (`get_video_info`, `extract_frames`, manual `redact_sensitive`) work without it.
-3. `ffmpeg`/`ffprobe` must be installed. `yt-dlp` is only needed for platform URLs.
+3. `ffmpeg`/`ffprobe` must be installed.
 
 If a prerequisite is missing, report exactly what is missing and how to fix it. Do not install packages or add API keys on the user's behalf.
 
@@ -123,7 +123,7 @@ node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./recording.mp4","effe
 | `error.code`                                  | Meaning                                       | What to tell the user                                                           |
 | --------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
 | `CONFIG_MISSING`                              | No `GEMINI_API_KEY`                           | Set the key, or use a local-only operation                                      |
-| `DEPENDENCY_MISSING`                          | `ffmpeg`/`ffprobe`/`yt-dlp` not found         | Install the tool or set `FFMPEG_PATH` / `YT_DLP_PATH`                           |
+| `DEPENDENCY_MISSING`                          | `ffmpeg`/`ffprobe` not found                  | Install the tool or set `FFMPEG_PATH` / `FFPROBE_PATH`                          |
 | `INPUT_NOT_FOUND`                             | Path does not exist                           | Ask for the correct path                                                        |
 | `URL_REJECTED`                                | Private/reserved host blocked                 | Set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` only if the user trusts that host |
 | `CONSENT_REQUIRED`                            | AI redaction needs consent                    | Ask before uploading frames to Google                                           |
