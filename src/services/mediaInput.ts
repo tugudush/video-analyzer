@@ -98,7 +98,11 @@ async function resolveDirect(
     const declared = result.contentType?.split(';')[0]?.trim().toLowerCase()
     const fromUrl = mimeTypeFromPath(new URL(result.finalUrl).pathname)
 
-    if (declared && !isMediaMimeType(declared)) {
+    if (
+      declared &&
+      !isMediaMimeType(declared) &&
+      !(declared === 'application/octet-stream' && isMediaMimeType(fromUrl))
+    ) {
       throw new VideoAnalyzerError('UNSUPPORTED_INPUT', 'The URL did not return media.', {
         hint: 'Use a direct media URL or a local file. Platform page downloads are disabled because their destinations cannot be validated.',
       })
