@@ -4,7 +4,12 @@ import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
 import { VideoAnalyzerError, invalidInput, toVideoAnalyzerError } from '../utils/errors.js'
 import { ensureDir, isSameFile } from '../utils/fsUtils.js'
-import { assertGeminiAvailable, getGeminiService, prepareMedia, statForUpload } from './shared.js'
+import {
+  assertGeminiAvailable,
+  getGeminiService,
+  prepareMedia,
+  uploadIdentityFor,
+} from './shared.js'
 import type { Artifact, Operation } from './types.js'
 
 export const transcribeVideoInput = z.object({
@@ -200,7 +205,7 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
       if (target && !sourcePath) await assertNotSourceAlias(target, prepared.path)
 
       const service = getGeminiService(ctx)
-      const upload = await statForUpload(prepared.media)
+      const upload = uploadIdentityFor(prepared.media)
 
       const transcript = await service.generateWithFile({
         path: prepared.path,

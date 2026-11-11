@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { GoogleGenAI } from '@google/genai'
 import type { Config } from '../config.js'
 import { requireGeminiApiKey } from '../config.js'
-import { isAbortError, runWithBounds } from '../utils/abort.js'
+import { clampTimerMs, isAbortError, runWithBounds } from '../utils/abort.js'
 import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 import type { Logger } from '../utils/logger.js'
 
@@ -114,7 +114,7 @@ function bindUpload(params: GeminiRequestOptions): { signal: AbortSignal; dispos
     const controller = new AbortController()
     timer = setTimeout(
       () => controller.abort(new DOMException('Timed out', 'TimeoutError')),
-      timeoutMs,
+      clampTimerMs(timeoutMs),
     )
     timer.unref()
     deadline = controller.signal
@@ -239,8 +239,6 @@ export function createGeminiApi(config: Config): GoogleGenAiApi {
 
 interface CachedUpload {
   handle: GeminiFileHandle
-  sizeBytes: number
-  mtimeMs: number
   expiresAtMs: number
 }
 
@@ -265,11 +263,11 @@ export interface GeminiServiceOptions {
 export interface EnsureUploadedParams {
   path: string
   mimeType: string
-  sizeBytes: number
-  mtimeMs: number
   /**
-   * Stable content identity for an immutable source. Without one, the upload
-   * is neither cached nor coalesced with another request.
+   * Content identity for an immutable source. It must be derived from the
+   * bytes — a path plus its size and mtime cannot identify contents, and the
+   * cache never re-checks the file. Without a key the upload is neither cached
+   * nor coalesced with another request.
    */
   cacheKey?: string
   retainSource?: () => () => Promise<void>
@@ -343,7 +341,7 @@ export class GeminiMediaService {
           const timer = setTimeout(() => {
             signal?.removeEventListener('abort', onAbort)
             resolve()
-          }, ms)
+          }, clampTimerMs(ms))
           signal?.addEventListener('abort', onAbort, { once: true })
         }))
   }
@@ -478,8 +476,6 @@ export class GeminiMediaService {
     if (key) {
       this.touch(key, {
         handle: active,
-        sizeBytes: params.sizeBytes,
-        mtimeMs: params.mtimeMs,
         expiresAtMs: Number.isFinite(expiresAtMs)
           ? expiresAtMs
           : this.now() + DEFAULT_CACHE_EXPIRY_MS,

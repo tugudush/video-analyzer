@@ -163,7 +163,7 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    cp .env.example .env    # then set GEMINI_API_KEY
    ```
 
-   A `.env` file is treated as untrusted input, because it travels with whatever repository the agent is working in. It may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings; `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` must come from the real environment, so a repository cannot choose the binaries that run or relax the private-host guard.
+   A `.env` file is treated as untrusted input, because it travels with whatever repository the agent is working in. It may set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings, except the ones listed below; `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, and `VIDEO_ANALYZER_CLI_PATH` must come from the real environment, so a repository cannot choose the binaries that run, the CLI the Skill launcher spawns, or relax the private-host guard.
 
    > **After setting a Windows environment variable, restart VS Code.** Windows stores it immediately, but a process only receives an environment snapshot when it starts. Restarting just the terminal is not enough — the integrated terminal inherits VS Code's environment, not the registry.
    >
@@ -257,24 +257,26 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 
 ## Configuration
 
-| Variable                             | Default              | Purpose                                                                                                               |
-| ------------------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                                            |
-| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                                |
-| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for `extract_frames` (scene capped at 200); `0` keeps only the 500-frame hard cap                        |
-| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                                            |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation; the remaining upload budget can shorten it |
-| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Budget for uploading the media and waiting for `ACTIVE`; the clock starts before the upload                           |
-| `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval                                                                                           |
-| `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts                                                                                |
-| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts                                                                                    |
-| `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`                                                                                |
-| `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher                                                                                   |
-| `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                                                                                              |
+| Variable                             | Default              | Purpose                                                                                                                    |
+| ------------------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                                                 |
+| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                                     |
+| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for `extract_frames` (scene capped at 200); `0` keeps only the 500-frame hard cap                             |
+| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                                                 |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation; the remaining upload budget can shorten it      |
+| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Budget for uploading the media and waiting for `ACTIVE`; the clock starts before the upload                                |
+| `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval                                                                                                |
+| `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts                                                                                     |
+| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts                                                                                         |
+| `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`                                                                                     |
+| `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher. Environment only: the launcher reads the process environment and never a `.env` file. |
+| `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                                                                                                   |
 
 The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 
-A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries that run or turn off the private-host guard.
+The three millisecond settings are capped at `2147483647` (2^31 - 1), the largest delay Node's timers accept; a larger value is rejected as `INVALID_INPUT` rather than silently firing the deadline after one millisecond.
+
+A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, and `VIDEO_ANALYZER_CLI_PATH` are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries that run, the CLI the Skill launcher spawns, or turn off the private-host guard.
 
 Details: [`skills/video-analyzer/references/configuration.md`](skills/video-analyzer/references/configuration.md).
 

@@ -111,8 +111,6 @@ describe('GoogleGenAiApi upload transport', () => {
     const pending = service.ensureUploaded({
       path: media,
       mimeType: 'video/mp4',
-      sizeBytes: 6,
-      mtimeMs: 0,
       signal: controller.signal,
     })
     await vi.waitFor(() => expect(chunkSignal).toBeDefined())

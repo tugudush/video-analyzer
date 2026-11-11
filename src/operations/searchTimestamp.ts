@@ -5,7 +5,7 @@ import {
   formatTimestamp,
   getGeminiService,
   prepareMedia,
-  statForUpload,
+  uploadIdentityFor,
 } from './shared.js'
 import type { Operation } from './types.js'
 
@@ -94,7 +94,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)
-      const upload = await statForUpload(prepared.media)
+      const upload = uploadIdentityFor(prepared.media)
 
       const response = await service.generateWithFile({
         path: prepared.path,

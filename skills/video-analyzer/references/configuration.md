@@ -46,8 +46,10 @@ order:
    The file is treated as **untrusted**: it travels with whatever repository the
    agent is working in, so only `GEMINI_API_KEY`, `GEMINI_MODEL`, and the
    `VIDEO_ANALYZER_*` settings are read from it. `PATH`, `FFMPEG_PATH`,
-   `FFPROBE_PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` are ignored there;
-   set those in the real environment.
+   `FFPROBE_PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, and
+   `VIDEO_ANALYZER_CLI_PATH` are ignored there; set those in the real environment.
+   The Skill launcher reads the process environment only and never reads a `.env`
+   file itself.
 
    ```bash
    cp .env.example .env    # then set GEMINI_API_KEY
@@ -101,6 +103,11 @@ verbatim. No silent model substitution happens.
 | `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`  | `600000` | Total budget for uploading the media and waiting for it to become `ACTIVE`. The clock starts before the upload, so a slow upload leaves less time for processing.                                                                                                                                                                                          |
 | `VIDEO_ANALYZER_POLL_INTERVAL_MS`   | `2000`   | Upload status poll interval.                                                                                                                                                                                                                                                                                                                               |
 
+The three millisecond settings are capped at `2147483647` (2^31 - 1), the largest
+delay Node's timers accept. A larger value is reported as `INVALID_INPUT` instead
+of being clamped, because Node clamps an unrepresentable delay to 1 ms and the
+deadline would then fire before the request starts.
+
 ## Output
 
 | Variable                    | Default           | Purpose                                                                         |
@@ -124,10 +131,10 @@ The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `Y
 
 ## Diagnostics
 
-| Variable                   | Default       | Purpose                                                                                  |
-| -------------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_LOG_LEVEL` | `warn`        | `silent`, `error`, `warn`, `info`, or `debug`. `info`/`debug` stream progress to stderr. |
-| `VIDEO_ANALYZER_CLI_PATH`  | auto-detected | Explicit path to `dist/cli.js` for the Skill launcher.                                   |
+| Variable                   | Default       | Purpose                                                                                                          |
+| -------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_LOG_LEVEL` | `warn`        | `silent`, `error`, `warn`, `info`, or `debug`. `info`/`debug` stream progress to stderr.                         |
+| `VIDEO_ANALYZER_CLI_PATH`  | auto-detected | Explicit path to `dist/cli.js` for the Skill launcher. Environment only: the launcher never reads a `.env` file. |
 
 ## Example
 

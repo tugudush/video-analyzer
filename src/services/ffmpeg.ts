@@ -620,6 +620,10 @@ export async function extractSceneFrames(
   const limit = options.maxFrames > 0 ? Math.min(unique.length, options.maxFrames) : unique.length
   const timestamps = unique.slice(0, limit)
 
+  // The detection pass asks for one frame beyond the budget, so seeing more
+  // frames than `maxFrames` proves it was cut short. The count is of detected
+  // frames, not unique timestamps: a duplicated `pts_time` must not hide that the
+  // pass hit its ceiling, because whatever follows the ceiling is unobserved.
   const truncated = options.maxFrames > 0 && detected.length > options.maxFrames
   if (timestamps.length === 0) return { paths: [], timestamps: [], truncated }
 

@@ -5,7 +5,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
 import { Agent, fetch, type Response } from 'undici'
-import { runWithBounds } from '../utils/abort.js'
+import { clampTimerMs, runWithBounds } from '../utils/abort.js'
 import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 
 /**
@@ -264,9 +264,11 @@ export async function downloadToFile(
   destPath: string,
   options: DownloadOptions,
 ): Promise<DownloadResult> {
+  // A delay Node cannot represent would otherwise abort on the next tick.
+  const timeoutMs = clampTimerMs(options.timeoutMs)
   const signals: AbortSignal[] = []
   if (options.signal) signals.push(options.signal)
-  signals.push(AbortSignal.timeout(options.timeoutMs))
+  signals.push(AbortSignal.timeout(timeoutMs))
   const signal = signals.length === 1 ? (signals[0] as AbortSignal) : AbortSignal.any(signals)
 
   /**
@@ -286,11 +288,11 @@ export async function downloadToFile(
     if (name === 'TimeoutError' || name === 'AbortError') {
       return new VideoAnalyzerError(
         'DOWNLOAD_FAILED',
-        `The download did not finish within ${options.timeoutMs} ms.`,
+        `The download did not finish within ${timeoutMs} ms.`,
         {
           hint: 'The download budget is max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s). Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for large files or slow links.',
           details: {
-            timeoutMs: options.timeoutMs,
+            timeoutMs,
             ...(current ? { url: redactedUrl(current) } : {}),
             stage,
           },

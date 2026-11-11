@@ -7,6 +7,22 @@
  * the awaited promise even when the client library ignores the signal.
  */
 
+/**
+ * Largest delay Node honours for `setTimeout`, `AbortSignal.timeout`, and the
+ * equivalent timer inside a client library.
+ *
+ * Node clamps anything above this to 1 ms and emits a `TimeoutOverflowWarning`,
+ * so an "effectively unlimited" timeout would fire before the request even
+ * starts instead of never firing.
+ */
+export const MAX_TIMER_MS = 2_147_483_647
+
+/** Clamp a delay into the range Node's timers accept. */
+export function clampTimerMs(ms: number): number {
+  if (!Number.isFinite(ms)) return MAX_TIMER_MS
+  return Math.min(Math.max(1, Math.floor(ms)), MAX_TIMER_MS)
+}
+
 export interface BoundOptions {
   /**
    * Milliseconds allowed for the call. Values `<= 0` disable the deadline and
@@ -48,7 +64,7 @@ export async function runWithBounds<T>(
     timer = setTimeout(() => {
       controller.abort()
       reject(options.onTimeout())
-    }, options.timeoutMs)
+    }, clampTimerMs(options.timeoutMs))
     // A pending deadline must not keep an otherwise finished process alive.
     timer.unref?.()
   })

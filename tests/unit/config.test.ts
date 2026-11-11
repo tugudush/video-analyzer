@@ -9,6 +9,7 @@ import {
   loadConfig,
   requireGeminiApiKey,
 } from '../../src/config.js'
+import { MAX_TIMER_MS } from '../../src/utils/abort.js'
 
 describe('loadConfig', () => {
   it('applies documented defaults', () => {
@@ -67,6 +68,31 @@ describe('loadConfig', () => {
     )
     expect(() => loadConfig({ VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: '10' })).toThrowError(
       /VIDEO_ANALYZER_REQUEST_TIMEOUT_MS/,
+    )
+  })
+
+  it('accepts the largest delay Node timers can represent', () => {
+    const config = loadConfig({
+      VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: String(MAX_TIMER_MS),
+      VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS: String(MAX_TIMER_MS),
+      VIDEO_ANALYZER_POLL_INTERVAL_MS: String(MAX_TIMER_MS),
+    })
+    expect(config.requestTimeoutMs).toBe(MAX_TIMER_MS)
+    expect(config.uploadTimeoutMs).toBe(MAX_TIMER_MS)
+    expect(config.pollIntervalMs).toBe(MAX_TIMER_MS)
+  })
+
+  /**
+   * Node clamps a `setTimeout` delay above 2^31-1 ms to 1 ms, which would turn an
+   * "effectively unlimited" budget into an immediate failure.
+   */
+  it.each([
+    'VIDEO_ANALYZER_REQUEST_TIMEOUT_MS',
+    'VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS',
+    'VIDEO_ANALYZER_POLL_INTERVAL_MS',
+  ])('rejects %s above the timer ceiling', (name) => {
+    expect(() => loadConfig({ [name]: String(MAX_TIMER_MS + 1) })).toThrowError(
+      new RegExp(`between \\d+ and ${MAX_TIMER_MS}`),
     )
   })
 
@@ -135,17 +161,20 @@ describe('.env trust boundary', () => {
     expect(target['VIDEO_ANALYZER_MAX_FRAMES']).toBe('7')
   })
 
-  it.each(['PATH', 'FFMPEG_PATH', 'FFPROBE_PATH', 'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS'])(
-    'ignores %s from the file',
-    async (name) => {
-      const file = path.join(dir, '.env')
-      await writeFile(file, `${name}=/tmp/attacker-controlled\n`, 'utf8')
+  it.each([
+    'PATH',
+    'FFMPEG_PATH',
+    'FFPROBE_PATH',
+    'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS',
+    'VIDEO_ANALYZER_CLI_PATH',
+  ])('ignores %s from the file', async (name) => {
+    const file = path.join(dir, '.env')
+    await writeFile(file, `${name}=/tmp/attacker-controlled\n`, 'utf8')
 
-      const target: NodeJS.ProcessEnv = {}
-      expect(applyDotEnv(target, file)).toEqual([])
-      expect(target).not.toHaveProperty(name)
-    },
-  )
+    const target: NodeJS.ProcessEnv = {}
+    expect(applyDotEnv(target, file)).toEqual([])
+    expect(target).not.toHaveProperty(name)
+  })
 
   it('keeps the allowlist limited to settings this toolkit reads', () => {
     for (const forbidden of [

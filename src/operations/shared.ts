@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { requireGeminiApiKey, type Config } from '../config.js'
 import { GeminiMediaService } from '../services/gemini.js'
@@ -82,11 +81,11 @@ export async function prepareMedia(
 
 /** Upload identity for one resolved source: what Gemini needs to cache it. */
 export interface UploadIdentity {
-  sizeBytes: number
-  mtimeMs: number
   /**
-   * Stable source identity when the local path is not stable (a direct download
-   * lands in a new temp directory on every call).
+   * Content identity, present only when the source is immutable for this call:
+   * a direct download lands in a new temp directory every time, so its path
+   * cannot identify it. A mutable local path has no key and is uploaded each
+   * time.
    */
   cacheKey?: string
   retainSource?: () => () => Promise<void>
@@ -95,14 +94,12 @@ export interface UploadIdentity {
 /**
  * Describe a resolved source for the Gemini upload cache.
  *
- * A downloaded copy is identified by content, so only identical downloads reuse
- * an upload. Mutable local paths have no cache key and are uploaded each time.
+ * The key, when there is one, is content-derived, so only identical downloads
+ * reuse an upload. Size and mtime are deliberately not part of the identity: the
+ * cache never re-checks them, and they cannot distinguish two different files.
  */
-export async function statForUpload(media: ResolvedMedia): Promise<UploadIdentity> {
-  const info = await stat(media.path)
+export function uploadIdentityFor(media: ResolvedMedia): UploadIdentity {
   return {
-    sizeBytes: info.size,
-    mtimeMs: info.mtimeMs,
     ...(media.cacheKey ? { cacheKey: media.cacheKey } : {}),
     ...(media.retainSource ? { retainSource: media.retainSource } : {}),
   }

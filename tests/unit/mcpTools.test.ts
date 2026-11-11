@@ -54,11 +54,24 @@ describe('loadOperationsForMcp', () => {
     expect(options.signal).toBeUndefined()
   })
 
-  it('rejects invalid arguments before running the operation', async () => {
+  it('leaves argument validation to executeOperation', async () => {
+    // `executeOperation` is the single owner of schema validation, so the adapter
+    // must not pre-validate or rewrite the payload on its way through.
+    await tool('get_video_info').invoke({})
+    expect(executeOperation).toHaveBeenCalledTimes(1)
+    expect(executeOperation.mock.calls[0]?.[1]).toEqual({})
+  })
+
+  it('still reports an invalid payload as INVALID_INPUT', async () => {
+    const actual = await vi.importActual<typeof import('../../src/operations/execute.js')>(
+      '../../src/operations/execute.js',
+    )
+    executeOperation.mockImplementation(actual.executeOperation)
+
     await expect(tool('get_video_info').invoke({})).rejects.toMatchObject({
       code: 'INVALID_INPUT',
+      message: expect.stringContaining('videoPath'),
     })
-    expect(executeOperation).not.toHaveBeenCalled()
   })
 
   /**

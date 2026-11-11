@@ -4,7 +4,7 @@ import {
   assertGeminiAvailable,
   getGeminiService,
   prepareMedia,
-  statForUpload,
+  uploadIdentityFor,
 } from './shared.js'
 import type { Operation } from './types.js'
 
@@ -27,7 +27,7 @@ export const analyzeVideoOperation: Operation<typeof analyzeVideoInput> = {
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)
-      const upload = await statForUpload(prepared.media)
+      const upload = uploadIdentityFor(prepared.media)
 
       const answer = await service.generateWithFile({
         path: prepared.path,

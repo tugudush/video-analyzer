@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import type { Readable } from 'node:stream'
 import { loadConfig, type Config } from '../config.js'
 import { listOperations, requireOperation } from '../operations/registry.js'
-import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
+import { executeOperation } from '../operations/execute.js'
 import { toResultEnvelope } from './envelope.js'
 import { createLogger, type Logger } from '../utils/logger.js'
 import {
@@ -14,7 +14,7 @@ import {
 import type { ErrorEnvelope } from '../utils/errors.js'
 import { sweepStaleTempDirs } from '../utils/fsUtils.js'
 import { VERSION } from '../version.js'
-import { ZodError, z } from 'zod'
+import { z } from 'zod'
 
 export interface CliIO {
   stdout(text: string): void
@@ -96,8 +96,11 @@ Environment:
   VIDEO_ANALYZER_LOG_LEVEL           silent|error|warn|info|debug
   FFMPEG_PATH / FFPROBE_PATH
 
-  A .env file in the working directory may only set the GEMINI_* and
-  VIDEO_ANALYZER_* settings above; it cannot change PATH or FFMPEG_PATH/FFPROBE_PATH.
+  A .env file in the working directory may only set GEMINI_API_KEY, GEMINI_MODEL,
+  VIDEO_ANALYZER_MAX_FRAMES, VIDEO_ANALYZER_DOWNLOAD_MAX_MB, the three timeout
+  settings, VIDEO_ANALYZER_OUTPUT_DIR, and VIDEO_ANALYZER_LOG_LEVEL. It cannot set
+  PATH, FFMPEG_PATH/FFPROBE_PATH, VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS, or
+  VIDEO_ANALYZER_CLI_PATH.
 `
 
 interface ParsedArgs {
@@ -302,15 +305,9 @@ export async function runCli(
 
   try {
     const operation = requireOperation(parsed.command)
-    const rawInput = await resolveInputJson(parsed, io)
-
-    let input: unknown
-    try {
-      input = operation.inputSchema.parse(rawInput)
-    } catch (error) {
-      if (error instanceof ZodError) throw zodErrorToInvalidInput(error)
-      throw error
-    }
+    // `executeOperation` validates against the operation's own schema, so the
+    // adapter does not parse the same payload a second time.
+    const input = await resolveInputJson(parsed, io)
 
     const logger = createLogger(config.logLevel)
     sweepTempDirsOnce(logger)

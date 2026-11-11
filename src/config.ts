@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { isLogLevel, type LogLevel } from './utils/logger.js'
+import { MAX_TIMER_MS } from './utils/abort.js'
 import { configMissing, invalidInput } from './utils/errors.js'
 import { loadDotEnvInto } from './utils/dotenv.js'
 
@@ -45,15 +46,23 @@ function readInt(
   env: NodeJS.ProcessEnv,
   name: string,
   fallback: number,
-  { min = 0 }: { min?: number } = {},
+  { min = 0, max }: { min?: number; max?: number } = {},
 ): number {
   const raw = env[name]
   if (raw === undefined || raw.trim() === '') return fallback
   const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < min) {
-    throw invalidInput(`${name} must be an integer >= ${min}.`, {
-      hint: `Received ${JSON.stringify(raw)}.`,
-    })
+  const inRange =
+    Number.isFinite(parsed) &&
+    Number.isInteger(parsed) &&
+    parsed >= min &&
+    (max === undefined || parsed <= max)
+  if (!inRange) {
+    throw invalidInput(
+      max === undefined
+        ? `${name} must be an integer >= ${min}.`
+        : `${name} must be an integer between ${min} and ${max}.`,
+      { hint: `Received ${JSON.stringify(raw)}.` },
+    )
   }
   return parsed
 }
@@ -147,7 +156,7 @@ export function loadConfig(
     env,
     'VIDEO_ANALYZER_REQUEST_TIMEOUT_MS',
     DEFAULTS.requestTimeoutMs,
-    { min: 1_000 },
+    { min: 1_000, max: MAX_TIMER_MS },
   )
 
   return {
@@ -158,9 +167,11 @@ export function loadConfig(
     requestTimeoutMs,
     uploadTimeoutMs: readInt(env, 'VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS', DEFAULTS.uploadTimeoutMs, {
       min: 1_000,
+      max: MAX_TIMER_MS,
     }),
     pollIntervalMs: readInt(env, 'VIDEO_ANALYZER_POLL_INTERVAL_MS', DEFAULTS.pollIntervalMs, {
       min: 100,
+      max: MAX_TIMER_MS,
     }),
     ffmpegPath: readString(env, 'FFMPEG_PATH') ?? 'ffmpeg',
     ffprobePath: readString(env, 'FFPROBE_PATH') ?? 'ffprobe',

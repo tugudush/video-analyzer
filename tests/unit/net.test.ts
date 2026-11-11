@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { assertSafeHttpUrl, downloadToFile, isPrivateAddress } from '../../src/utils/net.js'
+import { MAX_TIMER_MS } from '../../src/utils/abort.js'
 import { toErrorEnvelope } from '../../src/utils/errors.js'
 
 describe('isPrivateAddress', () => {
@@ -167,6 +168,23 @@ describe('downloadToFile failure classification', () => {
     setTimeout(() => controller.abort(), 100)
 
     await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+  })
+
+  it('treats a budget larger than Node timers can represent as a long wait, not an instant abort', async () => {
+    // Node clamps a delay above 2^31-1 ms to 1 ms, so the download used to fail
+    // on the next tick even though the caller asked for an unlimited budget.
+    const url = await listen((_request, response) => {
+      response.writeHead(200, { 'content-type': 'video/mp4' })
+      response.end('media')
+    })
+
+    await expect(
+      downloadToFile(url, await destination(), {
+        maxBytes: 1_000_000,
+        timeoutMs: MAX_TIMER_MS + 1,
+        allowPrivateHosts: true,
+      }),
+    ).resolves.toMatchObject({ bytesWritten: 5 })
   })
 
   it('keeps a genuine network failure on the download path', async () => {

@@ -1,8 +1,8 @@
-import { ZodError, type z } from 'zod'
+import type { z } from 'zod'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Config } from '../config.js'
 import { listOperations } from '../operations/registry.js'
-import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
+import { executeOperation } from '../operations/execute.js'
 import type { Logger } from '../utils/logger.js'
 import { formatBytes } from '../operations/shared.js'
 import { INLINE_IMAGE_BUDGET_BYTES, loadImages } from './envelope.js'
@@ -86,15 +86,9 @@ export function loadOperationsForMcp(
     readOnly: operation.readOnly ?? operation.category === 'analysis',
     destructive: operation.destructive ?? false,
     async invoke(args: unknown, options?: { signal?: AbortSignal }) {
-      let parsed: unknown
-      try {
-        parsed = operation.inputSchema.parse(args)
-      } catch (error) {
-        if (error instanceof ZodError) throw zodErrorToInvalidInput(error)
-        throw error
-      }
-
-      const result = await executeOperation(operation, parsed, config, {
+      // `executeOperation` validates against the same schema, so parsing here
+      // would only run the schema — and any transform — twice.
+      const result = await executeOperation(operation, args, config, {
         logger,
         ...(options?.signal ? { signal: options.signal } : {}),
         ...(onProgress ? { onProgress } : {}),

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
-import { statForUpload } from '../../src/operations/shared.js'
+import { uploadIdentityFor } from '../../src/operations/shared.js'
 import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
 import { resolveMediaInput } from '../../src/services/mediaInput.js'
 import { createLogger } from '../../src/utils/logger.js'
@@ -352,7 +352,7 @@ describe('remote media input policy', () => {
         await service.ensureUploaded({
           path: media.path,
           mimeType: media.mimeType,
-          ...(await statForUpload(media)),
+          ...uploadIdentityFor(media),
         })
       }
       const concurrentService = new GeminiMediaService({
@@ -365,7 +365,7 @@ describe('remote media input policy', () => {
           concurrentService.ensureUploaded({
             path: media.path,
             mimeType: media.mimeType,
-            ...(await statForUpload(media)),
+            ...uploadIdentityFor(media),
           }),
         ),
       )
@@ -402,14 +402,14 @@ describe('remote media input policy', () => {
       const leader = service.ensureUploaded({
         path: first.path,
         mimeType: first.mimeType,
-        ...(await statForUpload(first)),
+        ...uploadIdentityFor(first),
         signal: controller.signal,
       })
       const leaderResult = expect(leader).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
       const follower = service.ensureUploaded({
         path: second.path,
         mimeType: second.mimeType,
-        ...(await statForUpload(second)),
+        ...uploadIdentityFor(second),
       })
       controller.abort()
       await leaderResult

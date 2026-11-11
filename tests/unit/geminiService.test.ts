@@ -104,8 +104,6 @@ function createServiceWith(api: FakeApi, env: Record<string, string> = {}) {
 const uploadParams = {
   path: '/media/demo.mp4',
   mimeType: 'video/mp4',
-  sizeBytes: 1024,
-  mtimeMs: 1_700_000_000_000,
   cacheKey: 'content:demo',
 }
 
@@ -206,7 +204,7 @@ describe('GeminiMediaService', () => {
     })
     try {
       const mtime = new Date('2023-11-14T22:13:20Z')
-      const params = { path: file, mimeType: 'video/mp4', sizeBytes: 4, mtimeMs: mtime.getTime() }
+      const params = { path: file, mimeType: 'video/mp4' }
       await writeFile(file, 'AAAA')
       await utimes(file, mtime, mtime)
       await service.ensureUploaded(params)
