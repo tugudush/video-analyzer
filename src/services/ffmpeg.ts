@@ -152,6 +152,11 @@ export interface FrameExtractionOptions {
   outDir: string
   /** Longest-edge cap in pixels; keeps MCP image payloads reasonable. */
   maxWidth?: number
+  /**
+   * Duration the caller already probed. Supplying it skips a second `ffprobe`
+   * run on the same file.
+   */
+  durationSeconds?: number
   signal?: AbortSignal
 }
 
@@ -174,14 +179,24 @@ export const MIN_INTERVAL_SEC = 0.1
 export const MAX_FRAMES_PER_EXTRACTION = 500
 
 /**
+ * Ceiling on the frames one scene-change extraction may produce.
+ *
+ * Scene detection runs in two passes (detect, then extract each timestamp), so
+ * its ceiling is deliberately tighter than the `even` and `interval` budgets.
+ */
+export const MAX_SCENE_FRAMES = 200
+
+/**
  * Resolve the effective frame budget for one extraction.
  *
  * A configured ceiling of `0` (or an unusable value) falls back to the hard
- * ceiling, and a larger configured ceiling is clamped to it.
+ * ceiling, and a larger configured ceiling is clamped to it. The result is
+ * never below 1: ffmpeg reads `-frames:v 0` as "no limit", which would disable
+ * the cap this function exists to apply.
  */
 export function resolveFrameBudget(configured: number): number {
   if (!Number.isFinite(configured) || configured <= 0) return MAX_FRAMES_PER_EXTRACTION
-  return Math.min(Math.floor(configured), MAX_FRAMES_PER_EXTRACTION)
+  return Math.max(1, Math.min(Math.floor(configured), MAX_FRAMES_PER_EXTRACTION))
 }
 
 function frameArgs(options: FrameExtractionOptions): string[] {
@@ -205,8 +220,9 @@ export async function extractFramesEvenly(
   options: FrameExtractionOptions,
 ): Promise<string[]> {
   if (count <= 0) return []
-  const metadata = await getMediaMetadata(filePath, config, options.signal)
-  const duration = metadata.durationSeconds
+  const duration =
+    options.durationSeconds ??
+    (await getMediaMetadata(filePath, config, options.signal)).durationSeconds
   if (duration <= 0) {
     throw new VideoAnalyzerError(
       'MEDIA_PROCESSING_FAILED',
@@ -245,7 +261,7 @@ export interface IntervalExtractionResult {
   expectedFrames: number
   /** Frame budget that was enforced while ffmpeg was writing. */
   frameBudget: number
-  /** True when the budget stopped extraction before the end of the media. */
+  /** True when the written frames do not cover the media at this interval. */
   truncated: boolean
 }
 
@@ -268,8 +284,9 @@ export async function extractFramesAtInterval(
     })
   }
 
-  const metadata = await getMediaMetadata(filePath, config, options.signal)
-  const duration = metadata.durationSeconds
+  const duration =
+    options.durationSeconds ??
+    (await getMediaMetadata(filePath, config, options.signal)).durationSeconds
   const expectedFrames = duration > 0 ? Math.max(1, Math.ceil(duration / intervalSec)) : 0
   const frameBudget = resolveFrameBudget(options.maxFrames)
 
@@ -302,7 +319,9 @@ export async function extractFramesAtInterval(
     paths,
     expectedFrames,
     frameBudget,
-    truncated: expectedFrames > frameBudget,
+    // Compare against what was actually written: a shortfall means the list
+    // does not cover the interval, whichever cause capped it.
+    truncated: expectedFrames > paths.length,
   }
 }
 

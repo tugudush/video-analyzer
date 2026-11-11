@@ -14,7 +14,11 @@ export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
 export interface Config {
   geminiApiKey: string | undefined
   geminiModel: string
-  /** Frame ceiling for AI-assisted sampling. `0` means no fixed ceiling. */
+  /**
+   * Frame budget for AI-assisted sampling, scene detection, and `extract_frames`
+   * interval mode. `0` means no configured ceiling; a 500-frame hard ceiling per
+   * extraction still applies.
+   */
   maxFrames: number
   downloadMaxBytes: number
   requestTimeoutMs: number

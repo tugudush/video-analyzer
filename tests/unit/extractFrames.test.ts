@@ -26,6 +26,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
 interface FakeMedia {
   /** Duration the fake ffprobe reports. */
   durationSeconds: number
+  /** Timestamps the fake scene-detection pass reports. */
+  sceneTimes?: number[]
 }
 
 type Callback = (error: Error | null, result?: { stdout: string; stderr: string }) => void
@@ -38,7 +40,9 @@ function framesForInterval(args: string[], durationSeconds: number): number {
   return interval > 0 ? Math.max(1, Math.ceil(durationSeconds / interval)) : 0
 }
 
-function installFakes({ durationSeconds }: FakeMedia): { frameLimit: () => string | undefined } {
+function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
+  frameLimit: () => string | undefined
+} {
   let lastFrameLimit: string | undefined
 
   mocks.execFile.mockImplementation(
@@ -71,18 +75,33 @@ function installFakes({ durationSeconds }: FakeMedia): { frameLimit: () => strin
 
       const limitIndex = args.indexOf('-frames:v')
       lastFrameLimit = limitIndex >= 0 ? args[limitIndex + 1] : undefined
-      const allowed =
-        lastFrameLimit === undefined
-          ? framesForInterval(args, durationSeconds)
-          : Math.min(Number(lastFrameLimit), framesForInterval(args, durationSeconds))
 
-      const pattern = args[args.length - 1] as string
+      // Scene mode: a null-output pass reports timestamps on stderr, then each
+      // requested timestamp is extracted into its own file.
+      if (args.includes('null')) {
+        cb(null, {
+          stdout: '',
+          stderr: sceneTimes.map((time) => `pts_time:${time.toFixed(3)}`).join('\n'),
+        })
+        return
+      }
+
+      const target = args[args.length - 1] as string
+      const targets: string[] = []
+      if (target.includes('%04d')) {
+        const expected = framesForInterval(args, durationSeconds)
+        const allowed =
+          lastFrameLimit === undefined ? expected : Math.min(Number(lastFrameLimit), expected)
+        for (let index = 1; index <= allowed; index++) {
+          targets.push(target.replace('%04d', String(index).padStart(4, '0')))
+        }
+      } else if (lastFrameLimit === undefined || Number(lastFrameLimit) > 0) {
+        targets.push(target)
+      }
+
       void (async () => {
         try {
-          for (let index = 1; index <= allowed; index++) {
-            const target = pattern.replace('%04d', String(index).padStart(4, '0'))
-            await writeFile(target, `frame ${index}`)
-          }
+          for (const framePath of targets) await writeFile(framePath, `frame ${framePath}`)
           cb(null, { stdout: '', stderr: '' })
         } catch (error) {
           cb(error as Error)
@@ -94,7 +113,7 @@ function installFakes({ durationSeconds }: FakeMedia): { frameLimit: () => strin
   return { frameLimit: () => lastFrameLimit }
 }
 
-describe('extract_frames interval budgets', () => {
+describe('extract_frames frame budgets', () => {
   let dir: string
   let source: string
 
@@ -130,7 +149,7 @@ describe('extract_frames interval budgets', () => {
     expect(warnings).toContain('Raise VIDEO_ANALYZER_MAX_FRAMES')
   })
 
-  it('explains the hard ceiling when the configured budget is uncapped', async () => {
+  it('reports the expected count when the hard ceiling applies', async () => {
     installFakes({ durationSeconds: 600 })
     const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '0' })
     const outputDir = path.join(dir, 'frames')
@@ -147,7 +166,7 @@ describe('extract_frames interval budgets', () => {
     expect(result.warnings?.join(' ')).toContain('hard ceiling')
   })
 
-  it('applies the hard ceiling when the configured budget is uncapped', async () => {
+  it('passes the hard cap to ffmpeg when the configured budget is uncapped', async () => {
     const { frameLimit } = installFakes({ durationSeconds: 60 })
     const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '0' })
     const outputDir = path.join(dir, 'frames')
@@ -196,6 +215,66 @@ describe('extract_frames interval budgets', () => {
     expect(result.data).toMatchObject({ totalFrames: 5, offset: 0, hasMore: true })
   })
 
+  it('exposes the expected count and applied budget in data', async () => {
+    installFakes({ durationSeconds: 60 })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '3' })
+    const outputDir = path.join(dir, 'frames')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, outputDir },
+      config,
+    )
+
+    expect(result.data).toMatchObject({ expectedFrames: 60, frameBudget: 3, truncated: true })
+  })
+
+  it('treats a configured 500 as the hard ceiling when advising the user', async () => {
+    installFakes({ durationSeconds: 600 })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '500' })
+    const outputDir = path.join(dir, 'frames')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 1, outputDir },
+      config,
+    )
+
+    const warnings = result.warnings?.join(' ') ?? ''
+    expect(warnings).toContain('hard ceiling')
+    expect(warnings).not.toContain('Raise VIDEO_ANALYZER_MAX_FRAMES')
+  })
+
+  it('marks a scene result truncated when the ceiling clips the list', async () => {
+    installFakes({ durationSeconds: 60, sceneTimes: [1, 2, 3, 4] })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '2' })
+    const outputDir = path.join(dir, 'frames')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'scene', outputDir },
+      config,
+    )
+
+    expect(result.data).toMatchObject({ mode: 'scene', totalFrames: 2, truncated: true })
+    expect(result.warnings?.join(' ')).toContain('2-frame safety ceiling')
+  })
+
+  it('does not mark a complete scene result truncated', async () => {
+    installFakes({ durationSeconds: 60, sceneTimes: [1, 2] })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '10' })
+    const outputDir = path.join(dir, 'frames')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'scene', outputDir },
+      config,
+    )
+
+    expect(result.data).toMatchObject({ mode: 'scene', totalFrames: 2, truncated: false })
+    expect(result.warnings ?? []).toHaveLength(0)
+  })
+
   it('rejects a sub-minimum intervalSec before producing any frame', async () => {
     installFakes({ durationSeconds: 60 })
     const config = loadConfig({})
@@ -237,5 +316,9 @@ describe('resolveFrameBudget', () => {
   it('clamps a configured budget to the hard ceiling', () => {
     expect(resolveFrameBudget(25)).toBe(25)
     expect(resolveFrameBudget(MAX_FRAMES_PER_EXTRACTION * 4)).toBe(MAX_FRAMES_PER_EXTRACTION)
+  })
+
+  it('never returns zero, which ffmpeg would read as unlimited', () => {
+    expect(resolveFrameBudget(0.5)).toBe(1)
   })
 })

@@ -127,7 +127,9 @@ export VIDEO_ANALYZER_CLI_PATH=/path/to/video-analyzer/dist/cli.js
   `extract_frames` at nearby times before trusting a cut.
 - **Transcript is rough:** Gemini transcription is plain text with no diarization.
   Use a dedicated speech-to-text service if that is required.
-- **Fewer interval frames than expected:** `mode: "interval"` stops at the frame
-  budget (`VIDEO_ANALYZER_MAX_FRAMES`, hard ceiling 500) and reports
-  `data.truncated: true` with a warning. Raise the budget, increase `intervalSec`,
-  or use `mode: "even"` to spread a fixed count across the clip.
+- **Fewer frames than expected:** `data.truncated: true` means a ceiling cut the
+  list. In `interval` mode that is the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`,
+  hard ceiling 500): raise the budget, increase `intervalSec`, or use
+  `mode: "even"` to spread a fixed count across the clip. In `scene` mode it is
+  the 200-frame scene ceiling (or the configured budget when smaller): raise
+  `sceneThreshold` so fewer changes match.

@@ -7,7 +7,7 @@ import { createTempDir, ensureDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
 import { downloadToFile } from '../utils/net.js'
 
-export type MediaSource = 'local' | 'direct' | 'platform'
+export type MediaSource = 'local' | 'direct'
 
 export interface ResolvedMedia {
   /** Absolute path to a readable local media file. */

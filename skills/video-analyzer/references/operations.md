@@ -186,5 +186,15 @@ written, the response adds a warning and `data.truncated: true`, and the pages
 describe that shorter list. `maxImages` limits the returned page, never how many
 frames are produced.
 
+`interval` mode also reports `data.expectedFrames` (how many frames the interval
+would produce across the whole media) and `data.frameBudget` (the budget that was
+applied), so a caller can decide whether to re-run without parsing the warning.
+`data.truncated` is `true` whenever the written frames do not cover the whole
+media at the requested interval. In `scene` mode it means the list hit the scene
+ceiling (200 frames, or the configured budget when smaller).
+
+Ceilings per extraction: `even` and `interval` stop at 500 frames, `scene` at
+200, and `timestamps` at 100 entries. No input raises these.
+
 Frames are written into a folder under the working directory (or
 `VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted.
