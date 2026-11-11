@@ -240,7 +240,7 @@ video-analyzer search_timestamp --input '{"videoPath":"./demo.mp4","query":"the 
 # Transcript to a file
 video-analyzer transcribe_video --input '{"videoPath":"./interview.m4a","outputPath":"./interview.txt"}'
 
-# Frames at specific times
+# Frames at specific times (a new subfolder of ./frames)
 video-analyzer extract_frames --input '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
 ```
 

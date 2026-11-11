@@ -9,8 +9,10 @@ import {
   MAX_FRAMES_PER_EXTRACTION,
   MIN_INTERVAL_SEC,
   extractFramesAtInterval,
+  extractFramesEvenly,
   resolveFrameBudget,
 } from '../../src/services/ffmpeg.js'
+import { artifactDirOf } from '../helpers/results.js'
 
 /**
  * ffmpeg/ffprobe are replaced by a fake execFile so the production budget can be
@@ -114,11 +116,6 @@ function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
   return { frameLimit: () => lastFrameLimit }
 }
 
-/** Folder this run wrote into: a new subfolder of the requested output directory. */
-function frameDirOf(data: unknown): string {
-  return (data as { outputDir: string }).outputDir
-}
-
 describe('extract_frames frame budgets', () => {
   let dir: string
   let source: string
@@ -147,7 +144,7 @@ describe('extract_frames frame budgets', () => {
 
     expect(frameLimit()).toBe('3')
     // 60 frames would fit the interval; only the budgeted three may exist.
-    expect(await readdir(frameDirOf(result.data))).toHaveLength(3)
+    expect(await readdir(artifactDirOf(result.data))).toHaveLength(3)
     expect(result.images).toHaveLength(3)
     expect(result.data).toMatchObject({ totalFrames: 3, truncated: true })
     const warnings = result.warnings?.join(' ') ?? ''
@@ -167,7 +164,7 @@ describe('extract_frames frame budgets', () => {
     )
 
     // 600 frames would fit the interval, but the hard ceiling applies.
-    expect(await readdir(frameDirOf(result.data))).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
+    expect(await readdir(artifactDirOf(result.data))).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
     expect(result.data).toMatchObject({ totalFrames: MAX_FRAMES_PER_EXTRACTION, truncated: true })
     expect(result.warnings?.join(' ')).toContain('hard ceiling')
   })
@@ -216,7 +213,7 @@ describe('extract_frames frame budgets', () => {
       config,
     )
 
-    expect(await readdir(frameDirOf(result.data))).toHaveLength(5)
+    expect(await readdir(artifactDirOf(result.data))).toHaveLength(5)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ totalFrames: 5, offset: 0, hasMore: true })
   })
@@ -351,8 +348,8 @@ describe('extract_frames output directory isolation', () => {
     expect(second.data).toMatchObject({ totalFrames: 3, truncated: false })
     expect(second.warnings ?? []).toHaveLength(0)
 
-    const firstDir = frameDirOf(first.data)
-    const secondDir = frameDirOf(second.data)
+    const firstDir = artifactDirOf(first.data)
+    const secondDir = artifactDirOf(second.data)
     expect(secondDir).not.toBe(firstDir)
     // The earlier run's frames are untouched and never reported by the new one.
     expect(await readdir(firstDir)).toHaveLength(10)
@@ -395,6 +392,21 @@ describe('extract_frames output directory isolation', () => {
 
     // The stale frame is left alone and ffmpeg never ran.
     expect(await readdir(outDir)).toEqual(['frame-0001.jpg'])
+    expect(mocks.execFile.mock.calls.filter(([file]) => file === 'ffmpeg')).toHaveLength(0)
+  })
+
+  it('applies the same guard to even extraction', async () => {
+    installFakes({ durationSeconds: 5 })
+    const config = loadConfig({})
+    const outDir = path.join(dir, 'dirty-even')
+    await mkdir(outDir, { recursive: true })
+    await writeFile(path.join(outDir, 'frame-0001.jpg'), 'stale frame')
+
+    await expect(
+      extractFramesEvenly(source, 3, config, { outDir, durationSeconds: 5 }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    // The guard runs before any subprocess, so nothing was probed or encoded.
     expect(mocks.execFile.mock.calls.filter(([file]) => file === 'ffmpeg')).toHaveLength(0)
   })
 })

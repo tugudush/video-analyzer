@@ -150,11 +150,15 @@ export async function getMediaMetadata(
 
 export interface FrameExtractionOptions {
   /**
-   * Directory reserved for this extraction's frames.
+   * Directory this extraction writes into.
    *
-   * It must not already hold JPEGs: `even` and `interval` extraction list the
-   * directory afterwards, so a folder shared with an earlier run would report
-   * that run's frames as if this invocation had produced them.
+   * `extract_frames` always passes a newly created, empty folder, and that is
+   * the contract the helpers rely on: `even` and `interval` build their result
+   * by listing the directory afterwards, so a reused folder would report an
+   * earlier run's frames, while `timestamps` and `scene` reuse the same
+   * `frame-NNNN.jpg` names and would overwrite. `even` and `interval` refuse a
+   * directory that already holds JPEGs (see `assertEmptyFrameDir`); the other
+   * two leave that guarantee to the caller.
    */
   outDir: string
   /** Longest-edge cap in pixels; keeps MCP image payloads reasonable. */
@@ -214,10 +218,13 @@ function frameArgs(options: FrameExtractionOptions): string[] {
 /**
  * Refuse to extract into a directory that already holds frames.
  *
- * `even` and `interval` extraction build the result by listing the directory
- * after ffmpeg writes into it, so a directory reused across runs would mix an
- * earlier run's frames into this one and overwrite its numbered files. The
- * caller picks the directory, so this is reported as `INVALID_INPUT`.
+ * This is the invariant that makes `listFrames` trustworthy, not a check a
+ * tool caller can trigger: `extract_frames` always passes a folder it has
+ * just created, so the guard exists for direct callers of these helpers. A
+ * reused directory would mix an earlier run's frames into this one and
+ * overwrite its numbered files, so the caller's mistake is reported as
+ * `INVALID_INPUT` before any subprocess runs. Only JPEGs are considered, so
+ * an unrelated file in the directory does not block extraction.
  */
 async function assertEmptyFrameDir(dir: string): Promise<void> {
   const entries = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
@@ -229,7 +236,7 @@ async function assertEmptyFrameDir(dir: string): Promise<void> {
   throw invalidInput(
     `The frame output directory already contains ${existing.length} JPEG file(s).`,
     {
-      hint: 'Each extraction needs its own empty directory; use a new folder (or a new subfolder) per run.',
+      hint: 'Pass a directory this extraction owns; extract_frames always creates one per request.',
       details: { outDir: dir, existingFrames: existing.length },
     },
   )
@@ -365,7 +372,13 @@ export async function extractFramesAtInterval(
   }
 }
 
-/** Extract the single frame closest to each requested timestamp. */
+/**
+ * Extract the single frame closest to each requested timestamp.
+ *
+ * Files are named `frame-NNNN.jpg` by position, so the caller must own an empty
+ * directory: a reused one is overwritten in place, and no guard is applied here
+ * (see `FrameExtractionOptions.outDir`).
+ */
 export async function extractFramesAtTimestamps(
   filePath: string,
   timestamps: number[],

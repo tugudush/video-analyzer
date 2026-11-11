@@ -8,13 +8,9 @@ import { extractFramesOperation } from '../../src/operations/extractFrames.js'
 import { executeOperation } from '../../src/operations/execute.js'
 import { createLogger } from '../../src/utils/logger.js'
 import { createSampleAudio, createSampleVideo, ffmpegAvailable } from '../helpers/media.js'
+import { artifactDirOf } from '../helpers/results.js'
 
 const available = await ffmpegAvailable()
-
-/** Folder a run wrote into: every extraction gets its own subfolder. */
-function runDir(data: unknown): string {
-  return (data as { outputDir: string }).outputDir
-}
 
 describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
   let workDir: string
@@ -126,7 +122,7 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     )
 
     // A 4s clip at one frame per half second would produce eight frames.
-    expect(await readdir(runDir(result.data))).toHaveLength(2)
+    expect(await readdir(artifactDirOf(result.data))).toHaveLength(2)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ mode: 'interval', totalFrames: 2, truncated: true })
     expect(result.warnings?.join(' ')).toContain('2-frame budget')
@@ -151,9 +147,9 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     // The shorter run reports only its own two frames, not the earlier six.
     expect(second.data).toMatchObject({ totalFrames: 2, hasMore: false })
     expect(second.images).toHaveLength(2)
-    expect(runDir(second.data)).not.toBe(runDir(first.data))
-    expect(await readdir(runDir(first.data))).toHaveLength(6)
-    expect(await readdir(runDir(second.data))).toHaveLength(2)
+    expect(artifactDirOf(second.data)).not.toBe(artifactDirOf(first.data))
+    expect(await readdir(artifactDirOf(first.data))).toHaveLength(6)
+    expect(await readdir(artifactDirOf(second.data))).toHaveLength(2)
   })
 
   it('detects scene changes', async () => {

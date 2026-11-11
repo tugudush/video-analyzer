@@ -114,12 +114,9 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
       // Every extraction gets its own folder. Writing straight into a
       // caller-supplied directory would leave frames from an earlier run in the
       // listing, so `totalFrames`, paging, and `truncated` would describe a
-      // mixed set instead of the frames this request produced.
-      const outDir = await createArtifactDir(
-        ctx.config,
-        'frames',
-        input.outputDir ? path.resolve(input.outputDir) : undefined,
-      )
+      // mixed set instead of the frames this request produced. `outputDir` is a
+      // parent; `createArtifactDir` resolves it and returns an absolute path.
+      const outDir = await createArtifactDir(ctx.config, 'frames', input.outputDir)
 
       let paths: string[] = []
       const timestamps: number[] = []

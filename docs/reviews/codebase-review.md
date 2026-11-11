@@ -83,7 +83,7 @@ Create the parent directory and validate the output target before the expensive 
 
 ## Verification And Gaps
 
-- `npm test`: 157 passed, 11 skipped. FFmpeg and ffprobe were unavailable, so the nine local-media integration tests and one MCP integration test were skipped; one transcription test skips where symlinks or hard links are unavailable (Windows).
+- `npm test`: 161 passed, 12 skipped. FFmpeg and ffprobe were unavailable, so the ten local-media integration tests and one MCP integration test were skipped; one transcription test skips where symlinks or hard links are unavailable (Windows).
 - `npm run typecheck`, `npm run lint`, and `npm run format:check`: passed.
 - Focused probes confirmed the platform URL validation bypass, and the lack of effective cancellation for a pending fake Gemini request; the latter is now covered by unit tests that stall and abort real calls instead. Other findings are based on source and test inspection; rendered-pixel behavior and live Gemini interactions were not exercised in this environment.
 - Priority assumes callers may supply untrusted media URLs. Restricting inputs to trusted users reduces the exposure of the network and resource-exhaustion findings, but does not correct the behavior.
