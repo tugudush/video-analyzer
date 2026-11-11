@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai'
 import type { Config } from '../config.js'
 import { requireGeminiApiKey } from '../config.js'
 import { isAbortError, runWithBounds } from '../utils/abort.js'
-import { VideoAnalyzerError } from '../utils/errors.js'
+import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 import type { Logger } from '../utils/logger.js'
 
 /**
@@ -216,13 +216,6 @@ function requestTimeout(
   )
 }
 
-/** Raised when the caller cancels the operation. */
-function requestCancelled(): VideoAnalyzerError {
-  return new VideoAnalyzerError('GEMINI_TIMEOUT', 'The Gemini request was cancelled.', {
-    hint: 'The caller cancelled the operation before Gemini answered.',
-  })
-}
-
 /**
  * Shared Gemini media pipeline: one upload → poll → reuse implementation used by
  * every Gemini-backed operation.
@@ -259,7 +252,7 @@ export class GeminiMediaService {
   async ensureUploaded(params: EnsureUploadedParams): Promise<GeminiFileHandle> {
     const key = this.cacheKey(params)
     const signal = params.signal
-    if (signal?.aborted) throw requestCancelled()
+    if (signal?.aborted) throw operationCancelled()
 
     const cached = this.cache.get(key)
     if (cached && cached.expiresAtMs > this.now()) {
@@ -510,12 +503,12 @@ export class GeminiMediaService {
         timeoutMs: effective,
         ...(signal ? { signal } : {}),
         onTimeout: () => requestTimeout(stage, effective, variable),
-        onCancel: requestCancelled,
+        onCancel: operationCancelled,
       })
     } catch (error) {
       // A client library may surface the abort itself; keep the public error stable.
       if (isAbortError(error)) {
-        throw signal?.aborted ? requestCancelled() : requestTimeout(stage, effective, variable)
+        throw signal?.aborted ? operationCancelled() : requestTimeout(stage, effective, variable)
       }
       throw error
     }
@@ -533,7 +526,7 @@ export class GeminiMediaService {
       timeoutMs: 0,
       ...(signal ? { signal } : {}),
       onTimeout: () => requestTimeout('poll', 0),
-      onCancel: requestCancelled,
+      onCancel: operationCancelled,
     })
   }
 

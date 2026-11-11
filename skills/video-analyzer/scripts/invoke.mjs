@@ -14,7 +14,9 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,28 +34,36 @@ function fail(code, message, hint) {
  *
  * Preference order:
  *  1. VIDEO_ANALYZER_CLI_PATH (explicit override)
- *  2. the published bin on PATH (`video-analyzer`)
- *  3. a checkout-relative build (`<repo>/dist/cli.js`)
+ *  2. a checkout-relative build (`<repo>/dist/cli.js`)
+ *  3. the published bin on PATH (`video-analyzer`)
+ *
+ * `baseArgs` are the arguments that must precede the operation name: the script
+ * path when we spawn `node` ourselves, nothing when we exec a PATH shim.
  */
-async function resolveInvocation(args) {
+async function resolveInvocation() {
   const override = process.env.VIDEO_ANALYZER_CLI_PATH
   if (override) {
-    return { command: process.execPath, argv: [path.resolve(override), ...args] }
+    return { command: process.execPath, baseArgs: [path.resolve(override)] }
   }
 
   const repoRoot = path.resolve(HERE, '..', '..', '..')
   const localBuild = path.join(repoRoot, 'dist', 'cli.js')
   try {
     await readFile(localBuild, { encoding: 'utf8', flag: 'r' })
-    return { command: process.execPath, argv: [localBuild, ...args] }
+    return { command: process.execPath, baseArgs: [localBuild] }
   } catch {
     // Fall through to the globally installed binary.
   }
 
   return {
     command: process.platform === 'win32' ? 'video-analyzer.cmd' : 'video-analyzer',
-    argv: args,
+    baseArgs: [],
   }
+}
+
+/** npm-installed bin shims are batch files and cannot be spawned directly on Windows. */
+function isBatchShim(command) {
+  return /\.(cmd|bat)$/i.test(command)
 }
 
 function run(command, argv) {
@@ -107,33 +117,64 @@ if (payloadFile) {
   }
 }
 
+/**
+ * Send the payload to the CLI.
+ *
+ * `cmd.exe` re-parses the whole `/c` string, so a `&`, `|`, or `^` inside a path
+ * or question becomes a shell operator and the JSON arrives mangled. Batch shims
+ * therefore receive the payload through a temporary file instead of an argument;
+ * the direct `node` paths keep the argument form.
+ */
+const { command, baseArgs } = await resolveInvocation()
+const viaComSpec = isBatchShim(command)
+let payloadTempFile
+
+async function cleanupPayload() {
+  if (!payloadTempFile) return
+  const staging = payloadTempFile
+  payloadTempFile = undefined
+  await rm(staging, { force: true }).catch(() => undefined)
+}
+
 if (payload !== undefined) {
-  forwarded.push('--input', payload)
+  if (viaComSpec) {
+    payloadTempFile = path.join(
+      tmpdir(),
+      `video-analyzer-input-${process.pid}-${randomUUID()}.json`,
+    )
+    try {
+      await writeFile(payloadTempFile, payload, 'utf8')
+    } catch (error) {
+      fail('OUTPUT_FAILED', 'Could not stage the JSON payload for the CLI.', error.message)
+    }
+    forwarded.push('--input-file', payloadTempFile)
+  } else {
+    forwarded.push('--input', payload)
+  }
 }
 
-const { command, argv } = await resolveInvocation([operation, ...forwarded])
+const argv = [operation, ...forwarded]
 
-if (command.endsWith('.cmd') || command.endsWith('.bat')) {
-  // npm-installed shims are batch files and cannot be spawned directly on Windows.
-  const result = await run(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command, ...argv])
+try {
+  const result = viaComSpec
+    ? await run(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command, ...argv])
+    : await run(command, [...baseArgs, ...argv])
+
+  if (!result.stdout.trim()) {
+    await cleanupPayload()
+    fail(
+      'INTERNAL',
+      'The video-analyzer CLI produced no output.',
+      result.stderr.trim() ||
+        'Install the CLI (npm i -g video-analyzer), or set VIDEO_ANALYZER_CLI_PATH to dist/cli.js.',
+    )
+  }
+
   process.stdout.write(result.stdout)
-  process.stderr.write(result.stderr)
-  process.exit(result.code)
+  if (result.code !== 0) {
+    process.stderr.write(result.stderr)
+  }
+  process.exitCode = result.code
+} finally {
+  await cleanupPayload()
 }
-
-const result = await run(command, argv)
-
-if (!result.stdout.trim()) {
-  fail(
-    'INTERNAL',
-    'The video-analyzer CLI produced no output.',
-    result.stderr.trim() ||
-      'Install the CLI (npm i -g video-analyzer), or set VIDEO_ANALYZER_CLI_PATH to dist/cli.js.',
-  )
-}
-
-process.stdout.write(result.stdout)
-if (result.code !== 0) {
-  process.stderr.write(result.stderr)
-}
-process.exit(result.code)

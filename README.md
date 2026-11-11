@@ -270,7 +270,9 @@ Details: [`skills/video-analyzer/references/configuration.md`](skills/video-anal
 
 ## Errors
 
-Every failure uses a stable code: `INVALID_INPUT`, `CONFIG_MISSING`, `DEPENDENCY_MISSING`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`, `URL_REJECTED`, `DOWNLOAD_FAILED`, `MEDIA_PROCESSING_FAILED`, `GEMINI_UPLOAD_FAILED`, `GEMINI_PROCESSING_FAILED`, `GEMINI_REQUEST_FAILED`, `GEMINI_TIMEOUT`, `OUTPUT_FAILED`, `INTERNAL`.
+Every failure uses a stable code: `INVALID_INPUT`, `CONFIG_MISSING`, `DEPENDENCY_MISSING`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`, `URL_REJECTED`, `DOWNLOAD_FAILED`, `MEDIA_PROCESSING_FAILED`, `GEMINI_UPLOAD_FAILED`, `GEMINI_PROCESSING_FAILED`, `GEMINI_REQUEST_FAILED`, `GEMINI_TIMEOUT`, `OUTPUT_FAILED`, `OPERATION_CANCELLED`, `INTERNAL`.
+
+`OPERATION_CANCELLED` means the caller gave up — Ctrl-C, MCP tool cancellation, or an embedding caller's signal. Every cancelable stage (Gemini calls, FFmpeg runs, downloads) reports it the same way instead of as a media, network, or disk failure.
 
 Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skills/video-analyzer/references/troubleshooting.md).
 
@@ -307,7 +309,7 @@ npm run format       # prettier
 npm run check        # typecheck + lint + tests + format check
 ```
 
-Integration tests generate their own media fixtures with ffmpeg and **skip silently** when ffmpeg is unavailable, so a green run without ffmpeg means 15 tests did not execute. Check the skip count if that matters.
+Integration tests generate their own media fixtures with ffmpeg and **skip silently** when ffmpeg is unavailable, so a green run without ffmpeg means 11 tests did not execute. Check the skip count if that matters.
 
 ### Why oxlint instead of ESLint
 

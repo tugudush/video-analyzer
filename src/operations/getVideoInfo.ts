@@ -50,6 +50,9 @@ export const getVideoInfoOperation: Operation<typeof getVideoInfoInput> = {
   inputSchema: getVideoInfoInput,
   category: 'local',
   requiresGemini: false,
+  // Probes the file and writes nothing the caller keeps: a remote input is
+  // downloaded into a temporary directory that is removed before returning.
+  readOnly: true,
 
   async run(input, ctx) {
     const prepared = await prepareMedia(input.videoPath, ctx)

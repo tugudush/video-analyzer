@@ -47,10 +47,17 @@ describe('CLI/MCP parity', () => {
     }
   })
 
-  it('marks only analysis operations as read-only', () => {
+  it('marks read-only operations explicitly, including the local metadata probe', () => {
     const tools = loadOperationsForMcp(loadConfig({}), createLogger('silent'))
     const readOnly = tools.filter((tool) => tool.readOnly).map((tool) => tool.name)
-    expect(readOnly).toEqual(['analyze_video', 'summarize_video', 'search_timestamp'])
+    // get_video_info is in the local category but writes nothing the caller
+    // keeps, so it must not prompt clients that gate on read-only tools.
+    expect(readOnly).toEqual([
+      'analyze_video',
+      'summarize_video',
+      'search_timestamp',
+      'get_video_info',
+    ])
   })
 
   it('advertises destructive writes only for transcribe_video', () => {

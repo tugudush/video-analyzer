@@ -1,8 +1,23 @@
 # Video Analyzer — Findings and Implementation Plan
 
-**Status:** Planning only — do not implement yet  
-**Date:** 2026-10-30  
-**Reference:** [tugudush/video-context-mcp](https://github.com/tugudush/video-context-mcp)
+> **Superseded.** This is the original design document, kept for rationale. Several
+> decisions changed during implementation and are **not** described here:
+>
+> - **Platform page downloads are disabled.** yt-dlp is not used and the
+>   `YT_DLP_*` settings are unread; only direct HTTP(S) media URLs work, because
+>   platform destinations cannot be validated against SSRF.
+> - **No AI-side frame sampling.** The four AI operations send the whole file to
+>   Gemini; `VIDEO_ANALYZER_MAX_FRAMES` only affects `extract_frames`.
+> - **`transcribe_video` can write a transcript file** (`outputPath`), so it is
+>   neither read-only nor non-destructive.
+>
+> The current behaviour is documented in [README.md](./README.md) and
+> [skills/video-analyzer/references/](./skills/video-analyzer/references/).
+
+**Status:** Historical design document — implemented, with the exceptions below
+
+- **Date:** 2026-10-30
+- **Reference:** [tugudush/video-context-mcp](https://github.com/tugudush/video-context-mcp)
 
 ## 1. Goal
 

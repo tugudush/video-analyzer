@@ -148,6 +148,24 @@ describe('runCli', () => {
     )
   })
 
+  it('reports a missing --input-file as INPUT_NOT_FOUND, not an internal error', async () => {
+    const { io, stdoutText, stderrText } = capture()
+    const code = await runCli(
+      ['get_video_info', '--input-file', 'definitely-missing-args.json'],
+      io,
+      {},
+    )
+
+    expect(code).toBe(1)
+    const payload = JSON.parse(stdoutText()) as {
+      error: { code: string; message: string; hint?: string }
+    }
+    expect(payload.error.code).toBe('INPUT_NOT_FOUND')
+    expect(payload.error.message).toContain('definitely-missing-args.json')
+    expect(payload.error.hint).toContain('--input')
+    expect(stderrText()).toContain('INPUT_NOT_FOUND')
+  })
+
   it('reports schema violations with field paths', async () => {
     const { io, stdoutText } = capture()
     const code = await runCli(['analyze_video', '--input', '{"videoPath":"a.mp4"}'], io, {})

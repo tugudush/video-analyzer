@@ -15,6 +15,8 @@ import path from 'node:path'
  * - Malformed lines are skipped rather than aborting startup.
  * - Values are used verbatim apart from quote stripping; escape sequences are
  *   not interpreted.
+ * - A trailing `# comment` is dropped, whether it follows a bare value or a
+ *   quoted one (`KEY="value" # note`).
  */
 
 const LINE_PATTERN = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/
@@ -47,7 +49,16 @@ export function parseDotEnv(source: string): Record<string, string> {
     let value = (rawValue ?? '').trim()
 
     if (value.startsWith('"') || value.startsWith("'")) {
-      value = stripQuotes(value)
+      // A quoted value closes at the matching quote; anything after it may only
+      // be whitespace or a comment. Scanning for the closing quote (instead of
+      // testing the last character) keeps `KEY="value" # note` intact, which is
+      // a common way to annotate a secret.
+      const quote = value[0] as string
+      const closing = value.indexOf(quote, 1)
+      value =
+        closing > 0 && /^(?:\s+#.*)?$/.test(value.slice(closing + 1))
+          ? value.slice(1, closing)
+          : stripQuotes(value)
     } else {
       // Drop an unquoted trailing comment: `KEY=value # note`
       const comment = value.search(/\s#/)

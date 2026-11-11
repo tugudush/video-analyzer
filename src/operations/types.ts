@@ -48,7 +48,13 @@ export interface Operation<Schema extends z.ZodTypeAny = z.ZodTypeAny> {
   inputSchema: Schema
   /** Capability hints used by the operation-selection guidance in the Skill. */
   category: 'analysis' | 'local'
-  /** False when the operation can write files. Defaults to `category === 'analysis'`. */
+  /**
+   * False when the operation can write files the caller keeps. Published to MCP
+   * clients as `readOnlyHint`; defaults to `category === 'analysis'`.
+   *
+   * `get_video_info` opts in explicitly: it is in the `local` category but only
+   * reads the media and removes any temporary download before returning.
+   */
   readOnly?: boolean
   /**
    * True when the operation can replace a file the caller did not create during

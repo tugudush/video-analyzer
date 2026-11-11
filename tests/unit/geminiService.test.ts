@@ -282,7 +282,7 @@ describe('GeminiMediaService timeouts and cancellation', () => {
       parts: [{ kind: 'text', text: 'hi' }],
       signal: controller.signal,
     })
-    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
 
     controller.abort()
     await assertion
@@ -300,10 +300,10 @@ describe('GeminiMediaService timeouts and cancellation', () => {
 
     await expect(
       service.ensureUploaded({ ...uploadParams, signal: controller.signal }),
-    ).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
     await expect(
       service.generate({ parts: [{ kind: 'text', text: 'hi' }], signal: controller.signal }),
-    ).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+    ).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
 
     expect(api.uploadFile).not.toHaveBeenCalled()
     expect(api.generateContent).not.toHaveBeenCalled()
@@ -316,7 +316,7 @@ describe('GeminiMediaService timeouts and cancellation', () => {
     const controller = new AbortController()
 
     const pending = service.ensureUploaded({ ...uploadParams, signal: controller.signal })
-    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
 
     controller.abort()
     await assertion
@@ -391,8 +391,8 @@ describe('GeminiMediaService timeouts and cancellation', () => {
 
     const leader = service.ensureUploaded({ ...uploadParams, signal: controller.signal })
     const leaderAssertion = expect(leader).rejects.toMatchObject({
-      code: 'GEMINI_TIMEOUT',
-      message: 'The Gemini request was cancelled.',
+      code: 'OPERATION_CANCELLED',
+      message: 'The operation was cancelled.',
     })
     const follower = service.ensureUploaded(uploadParams)
 

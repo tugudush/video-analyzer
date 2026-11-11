@@ -1,3 +1,6 @@
+import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { analyzeVideoOperation } from '../../src/operations/analyzeVideo.js'
@@ -55,5 +58,21 @@ describe('Gemini pre-flight', () => {
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
 
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not create output directories for a request that fails', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'video-analyzer-preflight-'))
+    try {
+      const target = path.join(dir, 'nested', 'deeper', 'transcript.txt')
+
+      await expect(
+        transcribeVideoOperation.run({ videoPath: REMOTE, outputPath: target }, context()),
+      ).rejects.toMatchObject({ code: 'CONFIG_MISSING' })
+
+      // Validation must not leave a directory tree behind for a failed call.
+      await expect(stat(path.join(dir, 'nested'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

@@ -3,7 +3,13 @@ import { readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { Config } from '../config.js'
-import { VideoAnalyzerError, dependencyMissing, invalidInput } from '../utils/errors.js'
+import { isAbortError } from '../utils/abort.js'
+import {
+  VideoAnalyzerError,
+  dependencyMissing,
+  invalidInput,
+  operationCancelled,
+} from '../utils/errors.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,12 +74,31 @@ async function run(
       ...(signal ? { signal } : {}),
     })
   } catch (error) {
+    // A killed child is indistinguishable from a decoder failure by stderr
+    // alone, so cancellation is classified before anything else: the caller
+    // asked us to stop, which is not a problem with the media.
+    if (signal?.aborted || isAbortError(error)) throw operationCancelled({ cause: error })
+
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') {
       throw dependencyMissing(`${binary} is required but was not found on PATH.`, {
         hint: 'Install FFmpeg (https://ffmpeg.org/download.html) or set FFMPEG_PATH / FFPROBE_PATH.',
       })
     }
+
+    const killed = (error as { killed?: boolean }).killed === true
+    if (killed) {
+      throw new VideoAnalyzerError(
+        'MEDIA_PROCESSING_FAILED',
+        `${path.basename(binary)} did not finish within ${timeoutMs} ms.`,
+        {
+          hint: 'Long inputs can exceed this internal budget. Try a shorter clip, or a lower frame count or interval.',
+          details: { binary: path.basename(binary), timeoutMs },
+          cause: error,
+        },
+      )
+    }
+
     const stderr = (error as { stderr?: string }).stderr?.trim() ?? ''
     const tail = stderr.split('\n').slice(-4).join('\n')
     throw new VideoAnalyzerError('MEDIA_PROCESSING_FAILED', `${path.basename(binary)} failed.`, {

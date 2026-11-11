@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { assertSafeHttpUrl, isPrivateAddress } from '../../src/utils/net.js'
+import { createServer, type Server } from 'node:http'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { assertSafeHttpUrl, downloadToFile, isPrivateAddress } from '../../src/utils/net.js'
 
 describe('isPrivateAddress', () => {
   it.each([
@@ -75,5 +79,89 @@ describe('assertSafeHttpUrl', () => {
   it('allows private hosts when explicitly opted in', async () => {
     const url = await assertSafeHttpUrl('http://127.0.0.1:9000/a.mp4', { allowPrivateHosts: true })
     expect(url.hostname).toBe('127.0.0.1')
+  })
+})
+
+/**
+ * `downloadToFile` failures are classified before the generic branches: telling
+ * the user to check their network or their disk when they simply pressed Ctrl-C,
+ * or when a slow link ran out of budget, sends them after the wrong problem.
+ */
+describe('downloadToFile failure classification', () => {
+  const servers: Server[] = []
+  const dirs: string[] = []
+
+  async function listen(handler: Parameters<typeof createServer>[1]): Promise<string> {
+    const server = createServer(handler)
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server did not bind a port')
+    return `http://127.0.0.1:${address.port}/media.mp4`
+  }
+
+  async function destination(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'video-analyzer-net-'))
+    dirs.push(dir)
+    return path.join(dir, 'download.bin')
+  }
+
+  afterEach(async () => {
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+    for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reports an expired download budget as a timeout, not a network problem', async () => {
+    // Accepts the connection and never answers.
+    const url = await listen(() => undefined)
+
+    await expect(
+      downloadToFile(url, await destination(), {
+        maxBytes: 1_000_000,
+        timeoutMs: 200,
+        allowPrivateHosts: true,
+      }),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringContaining('did not finish within 200 ms'),
+      details: { timeoutMs: 200 },
+    })
+  })
+
+  it('reports a caller cancellation as OPERATION_CANCELLED, not a write failure', async () => {
+    // Sends headers and a partial body, then stalls so the abort lands mid-stream.
+    const url = await listen((_request, response) => {
+      response.writeHead(200, { 'content-type': 'video/mp4', 'content-length': '1000000' })
+      response.write(Buffer.alloc(1024))
+    })
+
+    const controller = new AbortController()
+    const pending = downloadToFile(url, await destination(), {
+      maxBytes: 2_000_000,
+      timeoutMs: 30_000,
+      allowPrivateHosts: true,
+      signal: controller.signal,
+    })
+    setTimeout(() => controller.abort(), 100)
+
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+  })
+
+  it('keeps a genuine network failure on the download path', async () => {
+    const url = await listen((request, response) => {
+      response.writeHead(503, { 'content-type': 'text/plain' })
+      response.end('unavailable')
+    })
+
+    await expect(
+      downloadToFile(url, await destination(), {
+        maxBytes: 1_000_000,
+        timeoutMs: 5_000,
+        allowPrivateHosts: true,
+      }),
+    ).rejects.toMatchObject({ code: 'DOWNLOAD_FAILED', details: { status: 503 } })
   })
 })

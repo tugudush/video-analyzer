@@ -39,6 +39,17 @@ describe('parseDotEnv', () => {
     expect(parseDotEnv('A=value # trailing note').A).toBe('value')
   })
 
+  it('drops a comment that follows a quoted value', () => {
+    expect(parseDotEnv('A="quoted value" # trailing note').A).toBe('quoted value')
+    expect(parseDotEnv("B='single' # note").B).toBe('single')
+    expect(parseDotEnv('GEMINI_API_KEY="abc123" # aistudio').GEMINI_API_KEY).toBe('abc123')
+  })
+
+  it('keeps a # inside a quoted value that also has a comment', () => {
+    expect(parseDotEnv('A="pass#word" # note').A).toBe('pass#word')
+    expect(parseDotEnv('A="pass # word"').A).toBe('pass # word')
+  })
+
   it('keeps empty values', () => {
     expect(parseDotEnv('A=').A).toBe('')
   })

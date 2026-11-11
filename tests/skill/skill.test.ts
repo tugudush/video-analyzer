@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
@@ -114,4 +115,62 @@ describe('video-analyzer Skill package', () => {
     expect(payload.ok).toBe(false)
     expect(payload.error.code).toBe('INVALID_INPUT')
   })
+
+  /**
+   * The user-level install resolves to the npm bin shim, a batch file that has
+   * to run through `cmd.exe`. `cmd.exe` re-parses the whole `/c` string, so a
+   * payload passed as an argument loses `&`, `|`, and `^` to the shell; the
+   * launcher must stage it in a file instead.
+   */
+  it.skipIf(process.platform !== 'win32')(
+    'launcher keeps payload metacharacters intact through the Windows cmd shim',
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'video-analyzer-skill-'))
+      const scripts = path.join(root, 'skills', 'video-analyzer', 'scripts')
+      const bin = path.join(root, 'bin')
+
+      try {
+        await mkdir(scripts, { recursive: true })
+        await mkdir(bin, { recursive: true })
+        await copyFile(
+          path.join(SKILL_DIR, 'scripts', 'invoke.mjs'),
+          path.join(scripts, 'invoke.mjs'),
+        )
+
+        // Stand-in for the installed shim: a batch file forwarding to this build.
+        const cli = path.resolve(SKILL_DIR, '..', '..', 'dist', 'cli.js')
+        await writeFile(
+          path.join(bin, 'video-analyzer.cmd'),
+          `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`,
+        )
+
+        const pathValue = `${bin}${path.delimiter}${process.env.Path ?? process.env.PATH ?? ''}`
+        const env: NodeJS.ProcessEnv = { ...process.env, Path: pathValue, PATH: pathValue }
+        delete env.VIDEO_ANALYZER_CLI_PATH
+
+        let failure: { code?: number; stdout?: string } = {}
+        try {
+          await execFileAsync(
+            process.execPath,
+            [
+              path.join(scripts, 'invoke.mjs'),
+              'get_video_info',
+              JSON.stringify({ videoPath: path.join(root, 'a&b|c^d.mp4') }),
+            ],
+            { timeout: 30_000, windowsHide: true, env },
+          )
+        } catch (error) {
+          failure = error as { code?: number; stdout?: string }
+        }
+
+        // Reaching the filesystem check proves the JSON survived the shell: a
+        // mangled payload fails earlier as INVALID_INPUT.
+        expect(failure.code).toBe(1)
+        const payload = JSON.parse(failure.stdout ?? '{}') as { error?: { code?: string } }
+        expect(payload.error?.code).toBe('INPUT_NOT_FOUND')
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
 })

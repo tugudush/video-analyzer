@@ -37,8 +37,10 @@ order:
 
 2. **`.env` in the working directory** — read once at startup. Only fills
    variables that are unset or blank, so it can never override a real export.
-   Lines may use `export KEY=value`, quotes, and `#` comments. Malformed lines are
-   skipped silently, and escape sequences are not interpreted.
+   Lines may use `export KEY=value`, quotes, and `#` comments — a comment may
+   follow a bare value or a quoted one (`GEMINI_API_KEY="…" # aistudio`).
+   Malformed lines are skipped silently, and escape sequences are not
+   interpreted.
 
    ```bash
    cp .env.example .env    # then set GEMINI_API_KEY

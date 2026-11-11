@@ -60,6 +60,9 @@ The opt-in does not allow embedded credentials or enable yt-dlp.
 
 - HTTP status errors: the link is expired, requires authentication, or is region-blocked.
 - Size errors: raise `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`.
+- Timeouts (`The download did not finish within N ms`) — the download budget is
+  `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`. Raise
+  `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` for large files or slow links.
 
 ## GEMINI_UPLOAD_FAILED
 
@@ -79,10 +82,6 @@ The message tells which bound ran out:
 - `Gemini did not finish processing the media in time` — the upload plus the wait
   for `ACTIVE` exceeded `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`. Large uploads can take
   minutes, so raise it or trim the clip.
-- `The Gemini request was cancelled` — the caller gave up (Ctrl-C on the CLI, MCP
-  tool cancellation, or an embedding caller's signal) and the in-flight request
-  was aborted. Nothing is wrong with the media; retry if the result is still
-  needed.
 
 ## GEMINI_PROCESSING_FAILED
 
@@ -125,6 +124,11 @@ ffmpeg/ffprobe ran but failed. The `hint` contains the tail of the ffmpeg error 
 usually a corrupt file, a stream-copy container mismatch, or a missing decoder.
 Re-encode, or try a different source file.
 
+`ffmpeg did not finish within N ms` means the command hit its internal time
+budget rather than failing on the media: use a shorter clip, a smaller `count`,
+or a larger `intervalSec`. A cancelled run is reported as
+`OPERATION_CANCELLED` instead, never as this code.
+
 `extract_frames` in `timestamps` mode reports this only after checking every
 requested value against the media duration, so an out-of-range timestamp comes
 back as `INVALID_INPUT` naming the value and the clip length instead.
@@ -136,6 +140,13 @@ example `ENOSPC`, `EACCES`, or a read-only volume). `details.outputPath` names t
 target and `details.code` the OS error. Choose a writable path or free disk space
 and re-run; re-transcribing is not required to know the text, which is also
 returned in the response summary.
+
+## OPERATION_CANCELLED
+
+The caller stopped the run: Ctrl-C on the CLI, MCP tool cancellation, or an
+embedding caller's signal. Nothing is wrong with the media, the network, or the
+disk — the operation was aborted mid-flight (during an upload, a generation, an
+FFmpeg run, or a download). Re-run if the result is still needed.
 
 ## Nothing happens / no output
 

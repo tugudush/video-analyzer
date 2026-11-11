@@ -119,9 +119,10 @@ node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"time
 | --------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- |
 | `CONFIG_MISSING`                              | No `GEMINI_API_KEY`                           | Set the key, or use a local-only operation                                      |
 | `DEPENDENCY_MISSING`                          | `ffmpeg`/`ffprobe` not found                  | Install the tool or set `FFMPEG_PATH` / `FFPROBE_PATH`                          |
-| `INPUT_NOT_FOUND`                             | Path does not exist                           | Ask for the correct path                                                        |
+| `INPUT_NOT_FOUND`                             | Path (or `--input-file`) does not exist       | Ask for the correct path                                                        |
 | `URL_REJECTED`                                | Private/reserved host blocked                 | Set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` only if the user trusts that host |
 | `GEMINI_TIMEOUT` / `GEMINI_PROCESSING_FAILED` | Long or unsupported media                     | Try a shorter clip or convert to MP4/H.264                                      |
+| `OPERATION_CANCELLED`                         | The caller stopped the run                    | Nothing is wrong with the media; re-run if the result is still needed           |
 | `UNSUPPORTED_INPUT`                           | Not a media file, or audio-only frame request | Pick a different operation                                                      |
 
 See [troubleshooting.md](./references/troubleshooting.md) for recovery steps.

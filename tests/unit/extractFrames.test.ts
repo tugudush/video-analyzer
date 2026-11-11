@@ -618,3 +618,104 @@ describe('extract_frames audio-only input', () => {
     },
   )
 })
+
+describe('extract_frames cancellation', () => {
+  let dir: string
+  let source: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-cancel-'))
+    source = path.join(dir, 'sample.mp4')
+    await writeFile(source, 'placeholder media bytes')
+    mocks.execFile.mockReset()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reports a cancelled run as OPERATION_CANCELLED, not a media failure', async () => {
+    installFakes({ durationSeconds: 10 })
+    // Model the kill: execFile rejects with an AbortError and no stderr to quote.
+    mocks.execFile.mockImplementation(
+      (file: string, _args: string[], _opts: unknown, cb: Callback) => {
+        if (file === 'ffprobe') {
+          cb(null, {
+            stdout: JSON.stringify({
+              streams: [{ codec_type: 'video', codec_name: 'h264', width: 320, height: 240 }],
+              format: { duration: '10', format_name: 'mov,mp4', size: '4096' },
+            }),
+            stderr: '',
+          })
+          return
+        }
+        const error = Object.assign(new Error('The operation was aborted'), {
+          name: 'AbortError',
+          code: 'ABORT_ERR',
+        })
+        setImmediate(() => cb(error))
+      },
+    )
+
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        {
+          videoPath: source,
+          mode: 'interval',
+          intervalSec: 1,
+          outputDir: path.join(dir, 'frames'),
+        },
+        loadConfig({}),
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({
+      code: 'OPERATION_CANCELLED',
+      message: 'The operation was cancelled.',
+    })
+  })
+
+  it('names the time budget when ffmpeg is killed by its own timeout', async () => {
+    installFakes({ durationSeconds: 10 })
+    mocks.execFile.mockImplementation(
+      (file: string, _args: string[], _opts: unknown, cb: Callback) => {
+        if (file === 'ffprobe') {
+          cb(null, {
+            stdout: JSON.stringify({
+              streams: [{ codec_type: 'video', codec_name: 'h264', width: 320, height: 240 }],
+              format: { duration: '10', format_name: 'mov,mp4', size: '4096' },
+            }),
+            stderr: '',
+          })
+          return
+        }
+        // What execFile produces when its own `timeout` kills the child.
+        const error = Object.assign(new Error('Command failed'), {
+          killed: true,
+          signal: 'SIGTERM',
+          stderr: '',
+        })
+        setImmediate(() => cb(error))
+      },
+    )
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        {
+          videoPath: source,
+          mode: 'interval',
+          intervalSec: 1,
+          outputDir: path.join(dir, 'frames'),
+        },
+        loadConfig({}),
+      ),
+    ).rejects.toMatchObject({
+      code: 'MEDIA_PROCESSING_FAILED',
+      message: expect.stringContaining('did not finish within'),
+    })
+  })
+})

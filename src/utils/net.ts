@@ -3,7 +3,7 @@ import { createWriteStream } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
-import { VideoAnalyzerError } from '../utils/errors.js'
+import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 
 /**
  * Network helpers with best-effort SSRF protection.
@@ -238,6 +238,40 @@ export async function downloadToFile(
   const signal = signals.length === 1 ? (signals[0] as AbortSignal) : AbortSignal.any(signals)
 
   let current = await assertSafeHttpUrl(url, options)
+
+  /**
+   * A cancelled download and an expired deadline both surface as an abort, but
+   * neither is a network or disk failure, so they are classified before the
+   * generic branches: telling the user to "check network access" or that a
+   * write failed sends them after the wrong problem.
+   */
+  const classifyDownloadFailure = (
+    error: unknown,
+    stage: 'download' | 'write',
+  ): VideoAnalyzerError => {
+    if (options.signal?.aborted) return operationCancelled({ cause: error })
+
+    const name = error instanceof Error ? error.name : ''
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      return new VideoAnalyzerError(
+        'DOWNLOAD_FAILED',
+        `The download did not finish within ${options.timeoutMs} ms.`,
+        {
+          hint: 'The download budget is max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s). Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for large files or slow links.',
+          details: { timeoutMs: options.timeoutMs, url: current.href, stage },
+          cause: error,
+        },
+      )
+    }
+
+    return stage === 'download'
+      ? new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to download ${current.href}`, {
+          hint: 'Check network access and that the URL is publicly reachable.',
+          cause: error,
+        })
+      : new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to write ${destPath}`, { cause: error })
+  }
+
   let response: Response | undefined
 
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
@@ -249,10 +283,7 @@ export async function downloadToFile(
         headers: { 'user-agent': 'video-analyzer', ...options.headers },
       })
     } catch (error) {
-      throw new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to download ${current.href}`, {
-        hint: 'Check network access and that the URL is publicly reachable.',
-        cause: error,
-      })
+      throw classifyDownloadFailure(error, 'download')
     }
 
     if (attempt.status >= 300 && attempt.status < 400) {
@@ -329,9 +360,8 @@ export async function downloadToFile(
     )
   } catch (error) {
     output.destroy()
-    throw error instanceof VideoAnalyzerError
-      ? error
-      : new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to write ${destPath}`, { cause: error })
+    if (error instanceof VideoAnalyzerError) throw error
+    throw classifyDownloadFailure(error, 'write')
   }
 
   return {

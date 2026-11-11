@@ -5,7 +5,12 @@ import { listOperations, requireOperation } from '../operations/registry.js'
 import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
 import { toResultEnvelope } from './envelope.js'
 import { createLogger } from '../utils/logger.js'
-import { toErrorEnvelope, toVideoAnalyzerError, invalidInput } from '../utils/errors.js'
+import {
+  toErrorEnvelope,
+  toVideoAnalyzerError,
+  inputNotFound,
+  invalidInput,
+} from '../utils/errors.js'
 import type { ErrorEnvelope } from '../utils/errors.js'
 import { sweepStaleTempDirs } from '../utils/fsUtils.js'
 import { VERSION } from '../version.js'
@@ -178,7 +183,21 @@ async function resolveInputJson(parsed: ParsedArgs, io: CliIO): Promise<unknown>
   let raw: string | undefined
 
   if (parsed.inputFile) {
-    raw = await readFile(parsed.inputFile, 'utf8')
+    try {
+      raw = await readFile(parsed.inputFile, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const hint =
+        'Check the path, or pass the arguments with --input or on stdin. Run "video-analyzer help <operation>" for the schema.'
+      if (code === 'ENOENT') {
+        throw inputNotFound(`Input file not found: ${parsed.inputFile}`, { hint, cause: error })
+      }
+      throw inputNotFound(`Could not read the input file: ${parsed.inputFile}`, {
+        hint,
+        ...(code ? { details: { code } } : {}),
+        cause: error,
+      })
+    }
   } else if (parsed.input !== undefined) {
     raw = parsed.input
   } else if (io.readStdin) {

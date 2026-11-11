@@ -104,9 +104,10 @@ async function assertNotSourceAlias(target: string, sourcePath: string): Promise
 /**
  * Validate the output target before any upload or generation work.
  *
- * The source media is never an acceptable target, an existing file is only
- * replaced when the caller explicitly asks for it, and missing parent
- * directories are created so the documented behaviour holds.
+ * The source media is never an acceptable target and an existing file is only
+ * replaced when the caller explicitly asks for it. Nothing is created here: a
+ * request that later fails must not leave directories behind, so missing parent
+ * directories are made at write time instead.
  */
 async function resolveTranscriptTarget(
   outputPath: string,
@@ -132,7 +133,6 @@ async function resolveTranscriptTarget(
     if (!overwrite) throw existingTargetError(target)
   }
 
-  await ensureDir(path.dirname(target))
   return target
 }
 
@@ -140,10 +140,12 @@ async function resolveTranscriptTarget(
  * Write the transcript without clobbering a file the caller did not approve.
  *
  * The `wx` flag makes the no-overwrite promise atomic: a target that appears
- * after validation fails the write instead of being silently replaced.
+ * after validation fails the write instead of being silently replaced. Parent
+ * directories are created here, so an earlier failure leaves no trace.
  */
 async function writeTranscript(target: string, text: string, overwrite: boolean): Promise<void> {
   try {
+    await ensureDir(path.dirname(target))
     await writeFile(target, text, { encoding: 'utf8', flag: overwrite ? 'w' : 'wx' })
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
