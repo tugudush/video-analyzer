@@ -187,14 +187,31 @@ export interface EnsureUploadedParams {
 
 const DEFAULT_CACHE_EXPIRY_MS = 47 * 60 * 60 * 1000 // Gemini files live ~48h
 
-/** Raised when a single Gemini network call exceeds its own deadline. */
-function requestTimeout(stage: string, timeoutMs: number): VideoAnalyzerError {
+/** Setting that caps every individual Gemini call. */
+const REQUEST_TIMEOUT_ENV = 'VIDEO_ANALYZER_REQUEST_TIMEOUT_MS'
+
+/** Setting that bounds the upload plus the wait for `ACTIVE`. */
+const UPLOAD_TIMEOUT_ENV = 'VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS'
+
+/**
+ * Raised when a single Gemini network call exceeds its own deadline.
+ *
+ * `variable` is the setting that actually bounded the call: the request timeout
+ * always applies, but an upload or a status poll can be cut short by what is
+ * left of the upload budget, and naming the wrong setting sends the user in
+ * circles.
+ */
+function requestTimeout(
+  stage: string,
+  timeoutMs: number,
+  variable: string = REQUEST_TIMEOUT_ENV,
+): VideoAnalyzerError {
   return new VideoAnalyzerError(
     'GEMINI_TIMEOUT',
     `Gemini did not respond within ${timeoutMs} ms (${stage}).`,
     {
-      hint: 'Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for slow networks or very large media.',
-      details: { stage, timeoutMs },
+      hint: `Raise ${variable} for slow networks, large media, or long processing.`,
+      details: { stage, timeoutMs, variable },
     },
   )
 }
@@ -261,13 +278,17 @@ export class GeminiMediaService {
       return this.waitUnlessCancelled(() => existing, signal)
     }
 
-    const promise = this.uploadAndWait(params, key)
+    // The upload is shared, so no single caller's signal may abort it: cancelling
+    // ends that caller's wait, not work the other waiters depend on.
+    const shared: EnsureUploadedParams = { ...params }
+    delete shared.signal
+    const promise = this.uploadAndWait(shared, key)
     this.inFlight.set(key, promise)
-    try {
-      return await promise
-    } finally {
-      this.inFlight.delete(key)
+    const settle = () => {
+      if (this.inFlight.get(key) === promise) this.inFlight.delete(key)
     }
+    void promise.then(settle, settle)
+    return this.waitUnlessCancelled(() => promise, signal)
   }
 
   private touch(key: string, entry: CachedUpload): void {
@@ -286,12 +307,15 @@ export class GeminiMediaService {
         'file status',
         signal,
         this.config.requestTimeoutMs,
+        REQUEST_TIMEOUT_ENV,
         (requestSignal, timeoutMs) => this.api.getFile(name, { signal: requestSignal, timeoutMs }),
       )
       return file.state === 'ACTIVE' ? file : null
     } catch (error) {
-      // A cancelled caller must not fall through to a fresh upload.
-      if (error instanceof VideoAnalyzerError && signal?.aborted) throw error
+      // A timeout or cancellation is about this call, not about the cached file:
+      // re-uploading would spend the budget again and hide the stall.
+      if (error instanceof VideoAnalyzerError) throw error
+      this.logger.debug(`Could not confirm the cached Gemini file: ${String(error)}`)
       return null
     }
   }
@@ -312,6 +336,7 @@ export class GeminiMediaService {
         'upload',
         params.signal,
         deadline - this.now(),
+        UPLOAD_TIMEOUT_ENV,
         (signal, timeoutMs) =>
           this.api.uploadFile({ path: params.path, mimeType: params.mimeType, signal, timeoutMs }),
       )
@@ -380,6 +405,7 @@ export class GeminiMediaService {
           'file status',
           params.signal,
           deadline - this.now(),
+          UPLOAD_TIMEOUT_ENV,
           (signal, timeoutMs) => this.api.getFile(fileName, { signal, timeoutMs }),
         )
       } catch (error) {
@@ -437,6 +463,7 @@ export class GeminiMediaService {
         'generation',
         params.signal,
         this.config.requestTimeoutMs,
+        REQUEST_TIMEOUT_ENV,
         (signal, timeoutMs) =>
           this.api.generateContent({
             model: this.config.geminiModel,
@@ -462,27 +489,33 @@ export class GeminiMediaService {
    *
    * The bound is both handed to the SDK and enforced here, because a request
    * that ignores the signal must still fail instead of hanging forever.
+   * `budgetName` identifies the stage's own budget, so an expired deadline can
+   * name the setting that actually applied.
    */
   private async request<T>(
     stage: string,
     signal: AbortSignal | undefined,
     timeoutMs: number,
+    budgetName: string,
     run: (signal: AbortSignal, timeoutMs: number) => Promise<T>,
   ): Promise<T> {
     const budget = Math.max(1, Math.floor(timeoutMs))
-    const effective = Math.min(this.config.requestTimeoutMs, budget)
+    // The request timeout caps every call; a stage budget can only shorten it.
+    const requestBound = budget >= this.config.requestTimeoutMs
+    const effective = requestBound ? this.config.requestTimeoutMs : budget
+    const variable = requestBound ? REQUEST_TIMEOUT_ENV : budgetName
 
     try {
       return await runWithBounds((requestSignal) => run(requestSignal, effective), {
         timeoutMs: effective,
         ...(signal ? { signal } : {}),
-        onTimeout: () => requestTimeout(stage, effective),
+        onTimeout: () => requestTimeout(stage, effective, variable),
         onCancel: requestCancelled,
       })
     } catch (error) {
       // A client library may surface the abort itself; keep the public error stable.
       if (isAbortError(error)) {
-        throw signal?.aborted ? requestCancelled() : requestTimeout(stage, effective)
+        throw signal?.aborted ? requestCancelled() : requestTimeout(stage, effective, variable)
       }
       throw error
     }

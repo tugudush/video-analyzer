@@ -266,6 +266,10 @@ describe('GeminiMediaService timeouts and cancellation', () => {
 
     await vi.advanceTimersByTimeAsync(30_000)
     await assertion
+
+    // The deadline, not only the caller, has to tear down the request itself.
+    const call = api.generateContent.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(call.signal.aborted).toBe(true)
   })
 
   it('rejects an in-flight generation as soon as the caller cancels', async () => {
@@ -356,5 +360,51 @@ describe('GeminiMediaService timeouts and cancellation', () => {
       details: { timeoutMs: 1000 },
     })
     expect(api.getFile).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a status timeout instead of re-uploading the cached file', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi({ states: ['ACTIVE'] })
+    const service = createServiceWith(api, { VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: '5000' })
+    await service.ensureUploaded(uploadParams)
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
+
+    api.getFile.mockImplementation(() => new Promise<GeminiFileHandle>(() => undefined))
+    const pending = service.ensureUploaded(uploadParams)
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await assertion
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a shared upload alive when the caller that started it cancels', async () => {
+    const api = createFakeApi()
+    let release: ((uploaded: GeminiFileHandle) => void) | undefined
+    const upload = new Promise<GeminiFileHandle>((resolve) => {
+      release = resolve
+    })
+    api.uploadFile.mockReturnValue(upload)
+    const service = createServiceWith(api)
+    const controller = new AbortController()
+
+    const leader = service.ensureUploaded({ ...uploadParams, signal: controller.signal })
+    const leaderAssertion = expect(leader).rejects.toMatchObject({
+      code: 'GEMINI_TIMEOUT',
+      message: 'The Gemini request was cancelled.',
+    })
+    const follower = service.ensureUploaded(uploadParams)
+
+    controller.abort()
+    await leaderAssertion
+
+    // The shared request is not the leader's to cancel.
+    const call = api.uploadFile.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(call.signal.aborted).toBe(false)
+
+    release?.(handle())
+    await expect(follower).resolves.toMatchObject({ state: 'ACTIVE' })
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
   })
 })

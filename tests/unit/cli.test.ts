@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseArgs, runCli } from '../../src/adapters/cli.js'
+import { defaultCliIO, parseArgs, runCli } from '../../src/adapters/cli.js'
 
 function capture() {
   const out: string[] = []
@@ -123,5 +123,38 @@ describe('runCli', () => {
     expect((JSON.parse(stdoutText()) as { error: { code: string } }).error.code).toBe(
       'INVALID_INPUT',
     )
+  })
+
+  it('installs Ctrl-C cancellation around the operation and removes it afterwards', async () => {
+    const { io } = capture()
+    let installed: (() => void) | undefined
+    let disposed = false
+
+    const code = await runCli(
+      ['get_video_info', '--input', '{"videoPath":"a.mp4"}'],
+      {
+        ...io,
+        onCancel: (handler) => {
+          installed = handler
+          return () => {
+            disposed = true
+          }
+        },
+      },
+      {},
+    )
+
+    expect(code).toBe(1)
+    expect(installed).toBeTypeOf('function')
+    expect(disposed).toBe(true)
+  })
+
+  it('backs the cancellation hook with a SIGINT listener in the default io', () => {
+    const before = process.listeners('SIGINT').length
+    const dispose = defaultCliIO.onCancel?.(() => undefined)
+
+    expect(process.listeners('SIGINT').length).toBe(before + 1)
+    dispose?.()
+    expect(process.listeners('SIGINT').length).toBe(before)
   })
 })
