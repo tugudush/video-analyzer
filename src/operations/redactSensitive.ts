@@ -30,12 +30,7 @@ export const redactRegionInput = z.object({
 })
 
 export const redactSensitiveInput = z.object({
-  videoPath: z
-    .string()
-    .min(1)
-    .describe(
-      'Local path, file:// URI, direct http(s) media URL, or a platform URL supported by yt-dlp.',
-    ),
+  videoPath: z.string().min(1).describe('Local path, file:// URI, or direct http(s) media URL.'),
   effect: z
     .enum(['blur', 'pixelate', 'blackout'])
     .optional()

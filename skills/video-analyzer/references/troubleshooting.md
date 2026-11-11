@@ -25,12 +25,6 @@ export FFMPEG_PATH=/usr/bin/ffmpeg
 export FFPROBE_PATH=/usr/bin/ffprobe
 ```
 
-For platform URLs only:
-
-```bash
-export YT_DLP_PATH=/usr/local/bin/yt-dlp
-```
-
 ## INPUT_NOT_FOUND
 
 The path does not exist from the current working directory. Confirm with the user
@@ -41,18 +35,19 @@ machine.
 
 Cause and fix:
 
-| Message                              | Fix                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------- |
-| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`) |
-| Empty file                           | Re-export or re-download the media                                        |
-| Frame extraction on audio-only input | Use `transcribe_video` instead                                            |
-| No video stream for redaction        | Redaction needs a video track                                             |
-| Downloaded content type unknown      | Use a URL path ending in a media extension, or a platform URL             |
+| Message                              | Fix                                                                          |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`)    |
+| Empty file                           | Re-export or re-download the media                                           |
+| Frame extraction on audio-only input | Use `transcribe_video` instead                                               |
+| No video stream for redaction        | Redaction needs a video track                                                |
+| Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                   |
+| URL did not return media             | Use a direct media URL or a local file; platform page downloads are disabled |
 
 ## URL_REJECTED
 
-The host resolves to a private, loopback, link-local, or metadata address. This
-blocks SSRF attempts.
+The host resolves to a private, loopback, link-local, or metadata address, or
+the URL contains embedded credentials. This blocks SSRF attempts.
 
 If the media genuinely lives on the user's own network:
 
@@ -61,13 +56,12 @@ export VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true
 ```
 
 Only do this deliberately. Never enable it because a remote URL "seemed fine".
+The opt-in does not allow embedded credentials or enable yt-dlp.
 
 ## DOWNLOAD_FAILED
 
 - HTTP status errors: the link is expired, requires authentication, or is region-blocked.
 - Size errors: raise `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`.
-- `yt-dlp` suggestions in the hint: pass `YT_DLP_COOKIES_FILE` for login-gated
-  content, or `YT_DLP_IMPERSONATE=chrome` for bot detection.
 
 ## GEMINI_UPLOAD_FAILED
 

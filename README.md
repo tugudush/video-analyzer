@@ -21,7 +21,7 @@ Neither interface depends on the other. Install one, or both.
 | `extract_frames`   | Frames by count, interval, timestamps, or scene changes   | no           |
 | `redact_sensitive` | Blur / pixelate / blackout regions                        | optional     |
 
-Inputs can be local paths, `file://` URIs, direct `http(s)` media URLs, or platform URLs supported by `yt-dlp`.
+Inputs can be local paths, `file://` URIs, or direct `http(s)` media URLs. Platform page downloads and yt-dlp fallback are disabled because their network destinations cannot be validated; use a local file or direct media URL instead.
 
 Deliberately **not** included: text-to-speech, image/video/music generation, multi-provider routing, and licensing or paid tiers.
 
@@ -29,7 +29,6 @@ Deliberately **not** included: text-to-speech, image/video/music generation, mul
 
 - Node.js 22 or newer
 - FFmpeg (includes `ffprobe`) on `PATH`, or `FFMPEG_PATH` / `FFPROBE_PATH`
-- `yt-dlp` — only for platform URLs such as YouTube
 - `GEMINI_API_KEY` — only for AI operations ([get a key](https://aistudio.google.com/app/apikey))
 
 ## Install
@@ -268,10 +267,8 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 | `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`    |
 | `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher       |
 | `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                  |
-| `YT_DLP_PATH`                        | `yt-dlp`             | Platform downloader                       |
-| `YT_DLP_MAX_RESOLUTION`              | —                    | Preferred max height                      |
-| `YT_DLP_COOKIES_FILE`                | —                    | Cookies for private sources               |
-| `YT_DLP_IMPERSONATE`                 | —                    | Browser to impersonate                    |
+
+The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 
 Details: [`skills/video-analyzer/references/configuration.md`](skills/video-analyzer/references/configuration.md).
 
@@ -288,13 +285,14 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations. AI-assisted redaction additionally requires an explicit `allowRemoteAnalysis: true`.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
+- **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
 - **Frame extraction writes to disk.** Returned image paths persist until you delete them.
 
 ## Architecture
 
 ```text
 MCP client ──> MCP adapter ─┐
-                            ├──> operation registry ──> services ──> Gemini / FFmpeg / yt-dlp
+                            ├──> operation registry ──> services ──> Gemini / FFmpeg
 Agent Skill ──> CLI adapter ─┘
 ```
 

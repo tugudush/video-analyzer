@@ -22,7 +22,7 @@ const SERVER_INSTRUCTIONS = [
   '- Still images at times or scene changes → extract_frames',
   '- Hide secrets on screen → redact_sensitive',
   '',
-  'Inputs may be local paths, file:// URIs, direct http(s) media URLs, or platform URLs supported by yt-dlp.',
+  'Inputs may be local paths, file:// URIs, or direct http(s) media URLs. Platform page downloads are disabled.',
   'Local operations (get_video_info, extract_frames, manual redaction) work without GEMINI_API_KEY.',
 ].join('\n')
 

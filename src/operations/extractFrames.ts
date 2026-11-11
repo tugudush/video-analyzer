@@ -15,9 +15,7 @@ export const extractFramesInput = z.object({
   videoPath: z
     .string()
     .min(1)
-    .describe(
-      'Local path, file:// URI, direct http(s) media URL, or a platform URL supported by yt-dlp. No AI is used.',
-    ),
+    .describe('Local path, file:// URI, or direct http(s) media URL. No AI is used.'),
   mode: z
     .enum(['even', 'interval', 'timestamps', 'scene'])
     .optional()

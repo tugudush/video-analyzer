@@ -9,12 +9,7 @@ import {
 import type { Operation } from './types.js'
 
 export const searchTimestampInput = z.object({
-  videoPath: z
-    .string()
-    .min(1)
-    .describe(
-      'Local path, file:// URI, direct http(s) media URL, or a platform URL supported by yt-dlp.',
-    ),
+  videoPath: z.string().min(1).describe('Local path, file:// URI, or direct http(s) media URL.'),
   query: z.string().min(1).describe('The event, object, phrase, or moment to locate in the video.'),
 })
 

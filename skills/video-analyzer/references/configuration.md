@@ -94,14 +94,12 @@ verbatim. No silent model substitution happens.
 
 ## Binaries
 
-| Variable                | Default   | Purpose                                                   |
-| ----------------------- | --------- | --------------------------------------------------------- |
-| `FFMPEG_PATH`           | `ffmpeg`  | ffmpeg executable.                                        |
-| `FFPROBE_PATH`          | `ffprobe` | ffprobe executable.                                       |
-| `YT_DLP_PATH`           | `yt-dlp`  | yt-dlp executable.                                        |
-| `YT_DLP_MAX_RESOLUTION` | unset     | Preferred maximum height for platform downloads.          |
-| `YT_DLP_COOKIES_FILE`   | unset     | Cookies file for private or authenticated sources.        |
-| `YT_DLP_IMPERSONATE`    | unset     | Browser to impersonate when a site blocks plain requests. |
+| Variable       | Default   | Purpose             |
+| -------------- | --------- | ------------------- |
+| `FFMPEG_PATH`  | `ffmpeg`  | ffmpeg executable.  |
+| `FFPROBE_PATH` | `ffprobe` | ffprobe executable. |
+
+The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 
 ## Network
 
@@ -121,6 +119,5 @@ verbatim. No silent model substitution happens.
 ```bash
 export GEMINI_API_KEY="…"
 export VIDEO_ANALYZER_OUTPUT_DIR="$HOME/video-output"
-export YT_DLP_MAX_RESOLUTION=1080
 node ./scripts/invoke.mjs list
 ```
