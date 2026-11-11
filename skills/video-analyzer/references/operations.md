@@ -159,17 +159,17 @@ Use this first when you need duration or dimensions to plan frames.
 
 Write JPEG frames to disk. No AI, no API key.
 
-| Field            | Type                                            | Required                  | Notes                              |
-| ---------------- | ----------------------------------------------- | ------------------------- | ---------------------------------- |
-| `videoPath`      | string                                          | yes                       | Must contain a video stream        |
-| `mode`           | `even` \| `interval` \| `timestamps` \| `scene` | no                        | Default `even`                     |
-| `count`          | integer 1–500                                   | no                        | `even` mode, default 5             |
-| `intervalSec`    | number ≥ 0.1                                    | required for `interval`   | Seconds between frames             |
-| `timestamps`     | number[]                                        | required for `timestamps` | Seconds, max 100 entries           |
-| `sceneThreshold` | number 0.05–0.95                                | no                        | `scene` mode, default 0.35         |
-| `maxImages`      | integer 1–100                                   | no                        | Page size, default 20              |
-| `offset`         | integer ≥ 0                                     | no                        | Skip frames for pagination         |
-| `outputDir`      | string                                          | no                        | Defaults to an auto-created folder |
+| Field            | Type                                            | Required                  | Notes                                              |
+| ---------------- | ----------------------------------------------- | ------------------------- | -------------------------------------------------- |
+| `videoPath`      | string                                          | yes                       | Must contain a video stream                        |
+| `mode`           | `even` \| `interval` \| `timestamps` \| `scene` | no                        | Default `even`                                     |
+| `count`          | integer 1–500                                   | no                        | `even` mode, default 5                             |
+| `intervalSec`    | number ≥ 0.1                                    | required for `interval`   | Seconds between frames                             |
+| `timestamps`     | number[]                                        | required for `timestamps` | Seconds, max 100 entries                           |
+| `sceneThreshold` | number 0.05–0.95                                | no                        | `scene` mode, default 0.35                         |
+| `maxImages`      | integer 1–100                                   | no                        | Page size, default 20                              |
+| `offset`         | integer ≥ 0                                     | no                        | Skip frames for pagination                         |
+| `outputDir`      | string                                          | no                        | Parent folder; each request writes a new subfolder |
 
 ```bash
 node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"scene","sceneThreshold":0.4}'
@@ -197,4 +197,10 @@ Ceilings per extraction: `even` and `interval` stop at 500 frames, `scene` at
 200, and `timestamps` at 100 entries. No input raises these.
 
 Frames are written into a folder under the working directory (or
-`VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted.
+`VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted. `data.outputDir` is the
+folder this request wrote into, which is always a newly created subfolder:
+supplying `outputDir` names the parent, not the folder itself. A directory
+reused across requests therefore never accumulates frames from earlier runs, so
+`totalFrames`, `offset`/`maxImages` paging, and `data.truncated` always describe
+only the frames the current request produced, and earlier frames are left
+alone instead of being overwritten by identically numbered files.

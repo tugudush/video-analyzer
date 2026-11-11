@@ -149,6 +149,17 @@ export async function getMediaMetadata(
 }
 
 export interface FrameExtractionOptions {
+  /**
+   * Directory this extraction writes into.
+   *
+   * `extract_frames` always passes a newly created, empty folder, and that is
+   * the contract the helpers rely on: `even` and `interval` build their result
+   * by listing the directory afterwards, so a reused folder would report an
+   * earlier run's frames, while `timestamps` and `scene` reuse the same
+   * `frame-NNNN.jpg` names and would overwrite. `even` and `interval` refuse a
+   * directory that already holds JPEGs (see `assertEmptyFrameDir`); the other
+   * two leave that guarantee to the caller.
+   */
   outDir: string
   /** Longest-edge cap in pixels; keeps MCP image payloads reasonable. */
   maxWidth?: number
@@ -204,6 +215,39 @@ function frameArgs(options: FrameExtractionOptions): string[] {
   return ['-vf', `scale=${width}:-2`, '-q:v', '3']
 }
 
+/**
+ * Refuse to extract into a directory that already holds frames.
+ *
+ * This is the invariant that makes `listFrames` trustworthy, not a check a
+ * tool caller can trigger: `extract_frames` always passes a folder it has
+ * just created, so the guard exists for direct callers of these helpers. A
+ * reused directory would mix an earlier run's frames into this one and
+ * overwrite its numbered files, so the caller's mistake is reported as
+ * `INVALID_INPUT` before any subprocess runs. Only JPEGs are considered, so
+ * an unrelated file in the directory does not block extraction.
+ */
+async function assertEmptyFrameDir(dir: string): Promise<void> {
+  const entries = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[]
+    throw error
+  })
+  const existing = entries.filter((entry) => entry.endsWith('.jpg'))
+  if (existing.length === 0) return
+  throw invalidInput(
+    `The frame output directory already contains ${existing.length} JPEG file(s).`,
+    {
+      hint: 'Pass a directory this extraction owns; extract_frames always creates one per request.',
+      details: { outDir: dir, existingFrames: existing.length },
+    },
+  )
+}
+
+/**
+ * Frames written by the current extraction, in filename order.
+ *
+ * The directory is reserved for one run (see `assertEmptyFrameDir`), so every
+ * entry listed here was produced by this invocation.
+ */
 async function listFrames(dir: string): Promise<string[]> {
   const entries = await readdir(dir)
   return entries
@@ -220,6 +264,8 @@ export async function extractFramesEvenly(
   options: FrameExtractionOptions,
 ): Promise<string[]> {
   if (count <= 0) return []
+  await assertEmptyFrameDir(options.outDir)
+
   const duration =
     options.durationSeconds ??
     (await getMediaMetadata(filePath, config, options.signal)).durationSeconds
@@ -283,6 +329,7 @@ export async function extractFramesAtInterval(
       hint: `Received ${JSON.stringify(intervalSec)}. Use a larger interval or mode "even".`,
     })
   }
+  await assertEmptyFrameDir(options.outDir)
 
   const duration =
     options.durationSeconds ??
@@ -325,7 +372,13 @@ export async function extractFramesAtInterval(
   }
 }
 
-/** Extract the single frame closest to each requested timestamp. */
+/**
+ * Extract the single frame closest to each requested timestamp.
+ *
+ * Files are named `frame-NNNN.jpg` by position, so the caller must own an empty
+ * directory: a reused one is overwritten in place, and no guard is applied here
+ * (see `FrameExtractionOptions.outDir`).
+ */
 export async function extractFramesAtTimestamps(
   filePath: string,
   timestamps: number[],

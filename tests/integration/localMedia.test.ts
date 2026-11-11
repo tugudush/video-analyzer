@@ -8,6 +8,7 @@ import { extractFramesOperation } from '../../src/operations/extractFrames.js'
 import { executeOperation } from '../../src/operations/execute.js'
 import { createLogger } from '../../src/utils/logger.js'
 import { createSampleAudio, createSampleVideo, ffmpegAvailable } from '../helpers/media.js'
+import { artifactDirOf } from '../helpers/results.js'
 
 const available = await ffmpegAvailable()
 
@@ -121,10 +122,34 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     )
 
     // A 4s clip at one frame per half second would produce eight frames.
-    expect(await readdir(outputDir)).toHaveLength(2)
+    expect(await readdir(artifactDirOf(result.data))).toHaveLength(2)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ mode: 'interval', totalFrames: 2, truncated: true })
     expect(result.warnings?.join(' ')).toContain('2-frame budget')
+  })
+
+  it('keeps a reused output directory free of earlier frames', async () => {
+    const sample = await createSampleVideo(workDir)
+    const outputDir = path.join(workDir, 'frames-reused')
+
+    const first = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample.path, mode: 'even', count: 6, outputDir },
+      config,
+    )
+    const second = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample.path, mode: 'even', count: 2, outputDir },
+      config,
+    )
+
+    expect(first.data).toMatchObject({ totalFrames: 6 })
+    // The shorter run reports only its own two frames, not the earlier six.
+    expect(second.data).toMatchObject({ totalFrames: 2, hasMore: false })
+    expect(second.images).toHaveLength(2)
+    expect(artifactDirOf(second.data)).not.toBe(artifactDirOf(first.data))
+    expect(await readdir(artifactDirOf(first.data))).toHaveLength(6)
+    expect(await readdir(artifactDirOf(second.data))).toHaveLength(2)
   })
 
   it('detects scene changes', async () => {

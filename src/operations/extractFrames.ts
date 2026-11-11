@@ -1,7 +1,6 @@
 import path from 'node:path'
 import { z } from 'zod'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
-import { ensureDir } from '../utils/fsUtils.js'
 import {
   MAX_FRAMES_PER_EXTRACTION,
   MAX_SCENE_FRAMES,
@@ -70,7 +69,7 @@ export const extractFramesInput = z.object({
     .string()
     .optional()
     .describe(
-      'Directory to write frames into. Defaults to an auto-created folder under the output directory.',
+      'Parent directory for the frames. Each request writes into a new subfolder of it, so earlier frames are never overwritten or mixed into this result. Defaults to an auto-created folder under the output directory.',
     ),
 })
 
@@ -112,10 +111,12 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         )
       }
 
-      const outDir = input.outputDir
-        ? path.resolve(input.outputDir)
-        : await createArtifactDir(ctx.config, 'frames')
-      await ensureDir(outDir)
+      // Every extraction gets its own folder. Writing straight into a
+      // caller-supplied directory would leave frames from an earlier run in the
+      // listing, so `totalFrames`, paging, and `truncated` would describe a
+      // mixed set instead of the frames this request produced. `outputDir` is a
+      // parent; `createArtifactDir` resolves it and returns an absolute path.
+      const outDir = await createArtifactDir(ctx.config, 'frames', input.outputDir)
 
       let paths: string[] = []
       const timestamps: number[] = []

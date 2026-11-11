@@ -69,9 +69,23 @@ export async function statForUpload(
   return { sizeBytes: info.size, mtimeMs: info.mtimeMs }
 }
 
-/** Directory that keeps generated artifacts for the caller. */
-export async function createArtifactDir(config: Config, prefix: string): Promise<string> {
-  const base = path.resolve(config.outputDir ?? process.cwd(), 'video-analyzer-output')
+/**
+ * Directory that keeps generated artifacts for the caller.
+ *
+ * Every call returns a new, empty folder, so artifacts written by an earlier
+ * run are never listed or overwritten by a later one. `baseDir` overrides the
+ * configured artifact root, which lets an operation treat a caller-supplied
+ * directory as a parent and still get a fresh folder per run. Both roots are
+ * resolved against the working directory, so the returned path is absolute.
+ */
+export async function createArtifactDir(
+  config: Config,
+  prefix: string,
+  baseDir?: string,
+): Promise<string> {
+  const base = path.resolve(
+    baseDir ?? path.join(config.outputDir ?? process.cwd(), 'video-analyzer-output'),
+  )
   const dir = path.join(base, `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
   await ensureDir(dir)
   return dir

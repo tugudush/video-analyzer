@@ -103,6 +103,9 @@ node ./scripts/invoke.mjs transcribe_video '{"videoPath":"./interview.m4a","lang
 node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
 ```
 
+`outputDir` names the parent: each request writes into a new subfolder of it, and
+`data.outputDir` / `images[]` report the files actually produced.
+
 ## Presenting Results
 
 - Quote the model's answer faithfully. If `warnings` says timestamps are estimates, say so.
