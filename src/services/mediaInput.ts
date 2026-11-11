@@ -5,7 +5,7 @@ import type { Config } from '../config.js'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { createTempDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
-import { downloadToFile } from '../utils/net.js'
+import { downloadToFile, redactedUrl } from '../utils/net.js'
 
 export type MediaSource = 'local' | 'direct'
 
@@ -16,15 +16,15 @@ export interface ResolvedMedia {
   mimeType: string
   sizeBytes: number
   /**
-   * Stable identity of where the bytes came from, when the local path is not
-   * stable. A direct download lands in a new temp directory per call, so the
-   * Gemini upload cache uses this instead of the path to recognise the source.
+   * Content-based identity for downloads whose local path changes per request.
    */
   cacheKey?: string
   /** Set when we created a temp working directory that the caller should remove. */
   tempDir: string | null
   /** Removes the temp directory (no-op for caller-owned local files). */
   cleanup(): Promise<void>
+  /** Retains a downloaded source while a shared upload still needs it. */
+  retainSource?: () => () => Promise<void>
 }
 
 export interface ResolveOptions {
@@ -122,19 +122,39 @@ async function resolveDirect(
         'Could not determine the media type of the downloaded file.',
         {
           hint: 'Use a URL whose path ends in a media extension, or a local file.',
-          details: { url: result.finalUrl, contentType: result.contentType },
+          details: { url: redactedUrl(new URL(result.finalUrl)), contentType: result.contentType },
         },
       )
     }
 
+    let references = 1
+    const release = async () => {
+      references -= 1
+      if (references === 0) await removeDir(tempDir)
+    }
+    let cleaned = false
     return {
       path: destination,
       source: 'direct',
       mimeType,
       sizeBytes: result.bytesWritten,
-      cacheKey: `direct:${result.finalUrl}:${result.bytesWritten}`,
+      cacheKey: `direct:${mimeType}:${result.sha256}`,
       tempDir,
-      cleanup: () => removeDir(tempDir),
+      cleanup: async () => {
+        if (cleaned) return
+        cleaned = true
+        await release()
+      },
+      retainSource: () => {
+        if (cleaned) throw new Error('Cannot retain a cleaned-up media source.')
+        references += 1
+        let released = false
+        return async () => {
+          if (released) return
+          released = true
+          await release()
+        }
+      },
     }
   } catch (error) {
     await removeDir(tempDir)

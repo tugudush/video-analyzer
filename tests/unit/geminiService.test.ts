@@ -431,4 +431,19 @@ describe('GeminiMediaService timeouts and cancellation', () => {
     await expect(follower).resolves.toMatchObject({ state: 'ACTIVE' })
     expect(api.uploadFile).toHaveBeenCalledTimes(1)
   })
+
+  it('aborts an upload when its last waiter cancels and allows a retry', async () => {
+    const api = createFakeApi()
+    api.uploadFile.mockImplementationOnce(() => new Promise<GeminiFileHandle>(() => undefined))
+    const service = createServiceWith(api)
+    const controller = new AbortController()
+    const pending = service.ensureUploaded({ ...uploadParams, signal: controller.signal })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    controller.abort()
+    await assertion
+    const firstCall = api.uploadFile.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(firstCall.signal.aborted).toBe(true)
+    await expect(service.ensureUploaded(uploadParams)).resolves.toMatchObject({ state: 'ACTIVE' })
+    expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
 })

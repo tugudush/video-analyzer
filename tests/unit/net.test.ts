@@ -2,8 +2,9 @@ import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { assertSafeHttpUrl, downloadToFile, isPrivateAddress } from '../../src/utils/net.js'
+import { toErrorEnvelope } from '../../src/utils/errors.js'
 
 describe('isPrivateAddress', () => {
   it.each([
@@ -35,6 +36,11 @@ describe('isPrivateAddress', () => {
     expect(isPrivateAddress('ff02::1')).toBe(true)
     expect(isPrivateAddress('::ffff:127.0.0.1')).toBe(true)
     expect(isPrivateAddress('::ffff:8.8.8.8')).toBe(false)
+    expect(isPrivateAddress('::127.0.0.1')).toBe(true)
+    expect(isPrivateAddress('::8.8.8.8')).toBe(false)
+    expect(isPrivateAddress('fec0::1')).toBe(true)
+    expect(isPrivateAddress('2002:7f00:1::')).toBe(true)
+    expect(isPrivateAddress('2002:0808:0808::')).toBe(true)
     expect(isPrivateAddress('2001:4860:4860::8888')).toBe(false)
   })
 
@@ -74,6 +80,14 @@ describe('assertSafeHttpUrl', () => {
     await expect(assertSafeHttpUrl('http://169.254.169.254/latest/meta-data')).rejects.toThrowError(
       /private or reserved/,
     )
+  })
+
+  it.each([
+    'http://[fec0::1]/media.mp4',
+    'http://[2002:7f00:1::]/media.mp4',
+    'http://[::127.0.0.1]/media.mp4',
+  ])('rejects reserved IPv6 URL %s', async (url) => {
+    await expect(assertSafeHttpUrl(url)).rejects.toMatchObject({ code: 'URL_REJECTED' })
   })
 
   it('allows private hosts when explicitly opted in', async () => {
@@ -118,17 +132,22 @@ describe('downloadToFile failure classification', () => {
     // Accepts the connection and never answers.
     const url = await listen(() => undefined)
 
-    await expect(
-      downloadToFile(url, await destination(), {
+    const outcome = await downloadToFile(
+      `${url}?token=example-secret#private`,
+      await destination(),
+      {
         maxBytes: 1_000_000,
         timeoutMs: 200,
         allowPrivateHosts: true,
-      }),
-    ).rejects.toMatchObject({
+      },
+    ).catch((error: unknown) => toErrorEnvelope(error))
+    expect(outcome).toMatchObject({
       code: 'DOWNLOAD_FAILED',
       message: expect.stringContaining('did not finish within 200 ms'),
-      details: { timeoutMs: 200 },
+      details: { timeoutMs: 200, url },
     })
+    expect(JSON.stringify(outcome)).not.toContain('example-secret')
+    expect(JSON.stringify(outcome)).not.toContain('private')
   })
 
   it('reports a caller cancellation as OPERATION_CANCELLED, not a write failure', async () => {
@@ -163,5 +182,56 @@ describe('downloadToFile failure classification', () => {
         allowPrivateHosts: true,
       }),
     ).rejects.toMatchObject({ code: 'DOWNLOAD_FAILED', details: { status: 503 } })
+  })
+
+  it.each([
+    { status: 403, length: '1000000' },
+    { status: 200, length: '1000000' },
+  ])('closes the rejected $status response body', async ({ status, length }) => {
+    let closed = false
+    const url = await listen((_request, response) => {
+      response.on('close', () => {
+        closed = true
+      })
+      response.writeHead(status, { 'content-length': length })
+      response.flushHeaders()
+      response.write('partial')
+    })
+
+    await expect(
+      downloadToFile(url, await destination(), {
+        maxBytes: 100,
+        timeoutMs: 30_000,
+        allowPrivateHosts: true,
+      }),
+    ).rejects.toMatchObject({ code: 'DOWNLOAD_FAILED' })
+    await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2_000 })
+  })
+
+  it.each([
+    { kind: 'http error', status: 403, location: undefined },
+    { kind: 'redirect without a location', status: 302, location: undefined },
+    { kind: 'invalid redirect', status: 302, location: 'http://[invalid?token=redirect-secret' },
+    { kind: 'redirect loop', status: 302, location: '?token=redirect-secret#redirect-fragment' },
+  ])('redacts signed URL data in $kind errors', async ({ status, location }) => {
+    const url = await listen((_request, response) => {
+      response.writeHead(status, location ? { location } : {})
+      response.end()
+    })
+    const outcome = await downloadToFile(
+      `${url}?token=initial-secret#initial-fragment`,
+      await destination(),
+      { maxBytes: 100, timeoutMs: 5_000, allowPrivateHosts: true },
+    ).catch((error: unknown) => toErrorEnvelope(error))
+    expect(outcome).toMatchObject({ code: 'DOWNLOAD_FAILED' })
+    const serialized = JSON.stringify(outcome)
+    expect(serialized).not.toContain('secret')
+    expect(serialized).not.toContain('fragment')
+  })
+
+  it('does not echo malformed signed URLs', async () => {
+    await expect(assertSafeHttpUrl('http://[invalid?token=example-secret')).rejects.not.toThrow(
+      /example-secret/,
+    )
   })
 })

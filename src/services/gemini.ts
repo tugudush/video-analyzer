@@ -165,6 +165,13 @@ interface CachedUpload {
   expiresAtMs: number
 }
 
+interface InFlightUpload {
+  promise: Promise<GeminiFileHandle>
+  controller: AbortController
+  waiters: number
+  settled: boolean
+}
+
 export interface GeminiServiceOptions {
   config: Config
   logger: Logger
@@ -187,6 +194,7 @@ export interface EnsureUploadedParams {
    * cache can still recognise a repeat request.
    */
   cacheKey?: string
+  retainSource?: () => () => Promise<void>
   signal?: AbortSignal
   onProgress?: (message: string) => void
 }
@@ -234,7 +242,7 @@ export class GeminiMediaService {
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
   private readonly cache = new Map<string, CachedUpload>()
-  private readonly inFlight = new Map<string, Promise<GeminiFileHandle>>()
+  private readonly inFlight = new Map<string, InFlightUpload>()
 
   constructor(options: GeminiServiceOptions) {
     this.config = options.config
@@ -274,23 +282,36 @@ export class GeminiMediaService {
       this.cache.delete(key)
     }
 
-    const existing = this.inFlight.get(key)
-    if (existing) {
+    let entry = this.inFlight.get(key)
+    if (entry) {
       params.onProgress?.('Waiting for an in-flight upload of the same file.')
-      return this.waitUnlessCancelled(() => existing, signal)
+    } else {
+      const release = params.retainSource?.()
+      const controller = new AbortController()
+      const shared = { ...params, signal: controller.signal }
+      const promise = this.uploadAndWait(shared, key).finally(async () => {
+        await release?.()
+      })
+      entry = { promise, controller, waiters: 0, settled: false }
+      this.inFlight.set(key, entry)
+      const current = entry
+      const settle = () => {
+        current.settled = true
+        if (this.inFlight.get(key) === current) this.inFlight.delete(key)
+      }
+      void promise.then(settle, settle)
     }
 
-    // The upload is shared, so no single caller's signal may abort it: cancelling
-    // ends that caller's wait, not work the other waiters depend on.
-    const shared: EnsureUploadedParams = { ...params }
-    delete shared.signal
-    const promise = this.uploadAndWait(shared, key)
-    this.inFlight.set(key, promise)
-    const settle = () => {
-      if (this.inFlight.get(key) === promise) this.inFlight.delete(key)
+    entry.waiters += 1
+    try {
+      return await this.waitUnlessCancelled(() => entry.promise, signal)
+    } finally {
+      entry.waiters -= 1
+      if (entry.waiters === 0 && !entry.settled) {
+        if (this.inFlight.get(key) === entry) this.inFlight.delete(key)
+        entry.controller.abort()
+      }
     }
-    void promise.then(settle, settle)
-    return this.waitUnlessCancelled(() => promise, signal)
   }
 
   private touch(key: string, entry: CachedUpload): void {

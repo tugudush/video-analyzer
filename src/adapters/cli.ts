@@ -32,52 +32,18 @@ export interface CliIO {
   onCancel?(handler: () => void): () => void
 }
 
-/** How long stdin may stay silent before the CLI assumes no payload is coming. */
-const STDIN_IDLE_TIMEOUT_MS = 500
-
-/**
- * Read a text payload from a stream until EOF, or until it goes idle.
- *
- * An inherited pipe that the caller never closes would otherwise block the
- * process indefinitely before `--input` is even considered, so silence is treated
- * as "no stdin payload". Data arriving restarts the window, so a slow writer is
- * still read in full.
- */
-export function readStdinUntilIdle(
-  stream: Readable,
-  idleMs = STDIN_IDLE_TIMEOUT_MS,
-): Promise<string | undefined> {
+/** Read a piped text payload through EOF; silence is not an end-of-input marker. */
+export async function readStdinToEnd(stream: Readable): Promise<string | undefined> {
   const chunks: Buffer[] = []
-
-  return new Promise((resolve) => {
-    let timer: NodeJS.Timeout | undefined
-
-    const finish = () => {
-      if (timer) clearTimeout(timer)
-      timer = undefined
-      stream.off('data', onData)
-      stream.off('end', finish)
-      stream.off('error', finish)
-      stream.pause()
-      const text = Buffer.concat(chunks).toString('utf8')
-      resolve(text.trim() === '' ? undefined : text)
-    }
-
-    const armIdleTimer = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(finish, idleMs)
-    }
-
-    function onData(chunk: Buffer | string): void {
+  try {
+    for await (const chunk of stream) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-      armIdleTimer()
     }
-
-    stream.on('data', onData)
-    stream.on('end', finish)
-    stream.on('error', finish)
-    armIdleTimer()
-  })
+  } catch (error) {
+    throw inputNotFound('Could not read standard input.', { cause: error })
+  }
+  const text = Buffer.concat(chunks).toString('utf8')
+  return text.trim() === '' ? undefined : text
 }
 
 export const defaultCliIO: CliIO = {
@@ -89,7 +55,7 @@ export const defaultCliIO: CliIO = {
   },
   readStdin: async () => {
     if (process.stdin.isTTY) return undefined
-    return readStdinUntilIdle(process.stdin)
+    return readStdinToEnd(process.stdin)
   },
 }
 

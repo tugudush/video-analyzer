@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { z } from 'zod'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { removeDir } from '../utils/fsUtils.js'
@@ -18,7 +19,17 @@ export const extractFramesInput = z.object({
   videoPath: z
     .string()
     .min(1)
-    .describe('Local path, file:// URI, or direct http(s) media URL. No AI is used.'),
+    .optional()
+    .describe(
+      'Required for a new extraction: local path, file:// URI, or direct http(s) media URL.',
+    ),
+  frameSetDir: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'For another page, pass data.outputDir from a previous extraction instead of videoPath.',
+    ),
   mode: z
     .enum(['even', 'interval', 'timestamps', 'scene'])
     .optional()
@@ -40,7 +51,7 @@ export const extractFramesInput = z.object({
     )
     .optional()
     .describe(
-      `For mode "interval": seconds between frames, ${MIN_INTERVAL_SEC} or more. Extraction stops at the configured frame budget (VIDEO_ANALYZER_MAX_FRAMES, hard ceiling 500).`,
+      `For mode "interval": seconds between samples, ${MIN_INTERVAL_SEC} or more. Labels are approximate sampling-grid times. Extraction stops at the configured frame budget (VIDEO_ANALYZER_MAX_FRAMES, hard ceiling 500).`,
     ),
   timestamps: z
     .array(z.number().min(0))
@@ -77,6 +88,114 @@ export const extractFramesInput = z.object({
 const DEFAULT_COUNT = 5
 const DEFAULT_SCENE_THRESHOLD = 0.35
 const DEFAULT_MAX_IMAGES = 20
+const FRAME_SET_FILE = '.video-analyzer-frames.json'
+const INTERVAL_TIMESTAMP_WARNING =
+  'Interval timestamps are approximate sampling-grid times, not the presentation times of the selected source frames.'
+const frameSetSchema = z.object({
+  version: z.literal(1),
+  mode: z.enum(['even', 'interval', 'timestamps', 'scene']),
+  files: z.array(z.string().regex(/^frame-\d{4}\.jpg$/)).max(MAX_FRAMES_PER_EXTRACTION),
+  timestamps: z.array(z.number().nonnegative()).max(MAX_FRAMES_PER_EXTRACTION),
+  truncated: z.boolean(),
+  warnings: z.array(z.string().max(2000)).max(10),
+  intervalStats: z.object({ expectedFrames: z.number(), frameBudget: z.number() }).optional(),
+})
+type FrameSet = z.infer<typeof frameSetSchema>
+
+async function loadFrameSet(dir: string): Promise<FrameSet> {
+  const manifest = path.join(dir, FRAME_SET_FILE)
+  let raw: string
+  try {
+    const info = await stat(manifest)
+    if (!info.isFile() || info.size > 128 * 1024) throw new Error('Invalid manifest size.')
+    raw = await readFile(manifest, 'utf8')
+  } catch (error) {
+    throw invalidInput(`Could not read the frame set in ${dir}.`, {
+      hint: 'Use data.outputDir from a completed extraction whose files still exist.',
+      cause: error,
+    })
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch (error) {
+    throw invalidInput(`Invalid frame set manifest in ${dir}.`, { cause: error })
+  }
+  const parsed = frameSetSchema.safeParse(value)
+  if (
+    !parsed.success ||
+    (parsed.data.timestamps.length !== 0 &&
+      parsed.data.timestamps.length !== parsed.data.files.length) ||
+    new Set(parsed.data.files).size !== parsed.data.files.length
+  ) {
+    throw invalidInput(`Invalid frame set manifest in ${dir}.`)
+  }
+  return parsed.data
+}
+
+async function renderFramePage(
+  frameSet: FrameSet,
+  outDir: string,
+  offset: number,
+  maxImages: number,
+): Promise<OperationResult> {
+  const { mode, files, timestamps, truncated, intervalStats } = frameSet
+  const warnings = [...frameSet.warnings]
+  if (mode === 'interval' && !warnings.includes(INTERVAL_TIMESTAMP_WARNING)) {
+    warnings.push(INTERVAL_TIMESTAMP_WARNING)
+  }
+  const page = files.slice(offset, offset + maxImages).map((file) => path.join(outDir, file))
+  const pageTimestamps = timestamps.slice(offset, offset + maxImages)
+  const hasMore = offset + page.length < files.length
+  for (const frame of page) {
+    let info
+    try {
+      info = await stat(frame)
+    } catch (error) {
+      throw invalidInput(`Frame is missing from the saved frame set: ${frame}`, { cause: error })
+    }
+    if (!info.isFile() || info.size === 0) {
+      throw invalidInput(`Frame is not a readable image file: ${frame}`)
+    }
+  }
+
+  if (hasMore) {
+    warnings.push(
+      `Returned frames ${offset + 1}-${offset + page.length} of ${files.length}. Use frameSetDir=${outDir} and offset=${offset + page.length} for the next page.`,
+    )
+  }
+
+  const images = page.map((framePath, index) => ({
+    path: framePath,
+    mimeType: 'image/jpeg',
+    label:
+      pageTimestamps[index] !== undefined
+        ? `t=${Number(pageTimestamps[index]).toFixed(2)}s`
+        : path.basename(framePath),
+  }))
+
+  return {
+    summary:
+      files.length === 0
+        ? 'No frames were extracted. The video may be shorter than the sampling interval, or no scene changes exceeded the threshold.'
+        : page.length === 0
+          ? `No frames on this page: offset ${offset} is past the ${files.length} frame(s) in this frame set (mode: ${mode}).`
+          : `Extracted ${page.length} frame(s) (mode: ${mode}) into ${outDir}.`,
+    data: {
+      mode,
+      outputDir: outDir,
+      ...(files.length === 0 ? { frames: [] } : {}),
+      totalFrames: files.length,
+      offset,
+      hasMore,
+      truncated,
+      ...intervalStats,
+      ...(pageTimestamps.length > 0 ? { timestamps: pageTimestamps } : {}),
+    },
+    images,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  }
+}
 
 /**
  * Reject timestamps at or beyond the end of the media.
@@ -116,6 +235,29 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
     const mode = input.mode ?? 'even'
     const maxImages = input.maxImages ?? DEFAULT_MAX_IMAGES
     const offset = input.offset ?? 0
+
+    if (input.frameSetDir) {
+      if (
+        input.videoPath !== undefined ||
+        input.mode !== undefined ||
+        input.count !== undefined ||
+        input.intervalSec !== undefined ||
+        input.timestamps !== undefined ||
+        input.sceneThreshold !== undefined ||
+        input.outputDir !== undefined
+      ) {
+        throw invalidInput('frameSetDir cannot be combined with extraction input or options.', {
+          hint: 'Use frameSetDir with only offset and maxImages to page an existing frame set.',
+        })
+      }
+      const outDir = path.resolve(input.frameSetDir)
+      return renderFramePage(await loadFrameSet(outDir), outDir, offset, maxImages)
+    }
+    if (!input.videoPath) {
+      throw invalidInput('A new extraction requires videoPath.', {
+        hint: 'To page an existing extraction, pass frameSetDir instead.',
+      })
+    }
 
     // Validate mode-specific arguments before doing any expensive work.
     if (mode === 'interval' && input.intervalSec === undefined) {
@@ -180,24 +322,25 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         truncated = result.truncated
         intervalStats = { expectedFrames: result.expectedFrames, frameBudget: result.frameBudget }
         timestamps.push(...result.timestamps)
-        if (!result.timestampsExact) {
-          warnings.push(
-            'ffmpeg did not report frame times, so the timestamps are the requested sampling grid (every intervalSec), not exact presentation times.',
-          )
-        }
         if (result.truncated) {
           // `0` and any value at or above the hard ceiling both end up at the
           // ceiling, where raising the setting would change nothing.
           const atHardCeiling =
             result.frameBudget === MAX_FRAMES_PER_EXTRACTION &&
             (ctx.config.maxFrames <= 0 || ctx.config.maxFrames >= MAX_FRAMES_PER_EXTRACTION)
-          warnings.push(
-            `intervalSec ${intervalSec} would produce about ${result.expectedFrames} frames over ${prepared.metadata.durationSeconds.toFixed(1)}s; extraction stopped after ${paths.length} frames against the ${result.frameBudget}-frame budget. ${
-              atHardCeiling
-                ? 'That is the hard ceiling per extraction, so use a larger intervalSec or mode "even" to cover the whole clip.'
-                : 'Raise VIDEO_ANALYZER_MAX_FRAMES, use a larger intervalSec, or use mode "even" for a fixed spread.'
-            }`,
-          )
+          if (paths.length >= result.frameBudget) {
+            warnings.push(
+              `intervalSec ${intervalSec} would produce about ${result.expectedFrames} frames over ${prepared.metadata.durationSeconds.toFixed(1)}s; extraction stopped after ${paths.length} frames against the ${result.frameBudget}-frame budget. ${
+                atHardCeiling
+                  ? 'That is the hard ceiling per extraction, so use a larger intervalSec or mode "even" to cover the whole clip.'
+                  : 'Raise VIDEO_ANALYZER_MAX_FRAMES, use a larger intervalSec, or use mode "even" for a fixed spread.'
+              }`,
+            )
+          } else {
+            warnings.push(
+              `Expected about ${result.expectedFrames} interval frames, but ffmpeg produced ${paths.length}; the media may not cover the whole sampling grid.`,
+            )
+          }
         }
       } else if (mode === 'timestamps') {
         const requested = input.timestamps as number[]
@@ -230,76 +373,27 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         }
       }
 
-      if (paths.length === 0) {
-        return {
-          summary:
-            'No frames were extracted. The video may be shorter than the sampling interval, or no scene changes exceeded the threshold.',
-          data: {
-            mode,
-            outputDir: outDir,
-            frames: [],
-            totalFrames: 0,
-            offset,
-            hasMore: false,
-            truncated,
-            ...intervalStats,
-          },
-          images: [],
-          warnings,
-        }
+      const frameSet: FrameSet = {
+        version: 1,
+        mode,
+        files: paths.map((framePath) => path.basename(framePath)),
+        timestamps,
+        truncated,
+        warnings,
+        ...(intervalStats ? { intervalStats } : {}),
       }
-
-      const page = paths.slice(offset, offset + maxImages)
-      const pageTimestamps = timestamps.slice(offset, offset + maxImages)
-      const hasMore = offset + page.length < paths.length
-
-      if (page.length === 0) {
-        return {
-          summary: `No frames on this page: offset ${offset} is past the ${paths.length} frame(s) this request extracted (mode: ${mode}).`,
-          data: {
-            mode,
-            outputDir: outDir,
-            totalFrames: paths.length,
-            offset,
-            hasMore: false,
-            truncated,
-            ...intervalStats,
-          },
-          images: [],
-          warnings,
-        }
+      try {
+        await writeFile(path.join(outDir, FRAME_SET_FILE), JSON.stringify(frameSet), {
+          encoding: 'utf8',
+          flag: 'wx',
+        })
+      } catch (error) {
+        throw new VideoAnalyzerError('OUTPUT_FAILED', 'Could not save frame set metadata.', {
+          details: { outputDir: outDir },
+          cause: error,
+        })
       }
-
-      if (hasMore) {
-        warnings.push(
-          `Returned frames ${offset + 1}-${offset + page.length} of ${paths.length}. Re-run with offset=${offset + page.length} for the next page.`,
-        )
-      }
-
-      const images = page.map((framePath, index) => ({
-        path: framePath,
-        mimeType: 'image/jpeg',
-        label:
-          pageTimestamps[index] !== undefined
-            ? `t=${Number(pageTimestamps[index]).toFixed(2)}s`
-            : path.basename(framePath),
-      }))
-
-      return {
-        summary: `Extracted ${page.length} frame(s) (mode: ${mode}) into ${outDir}.`,
-        data: {
-          mode,
-          outputDir: outDir,
-          totalFrames: paths.length,
-          offset,
-          hasMore,
-          truncated,
-          ...intervalStats,
-          ...(pageTimestamps.length > 0 ? { timestamps: pageTimestamps } : {}),
-        },
-        images,
-        ...(warnings.length > 0 ? { warnings } : {}),
-      }
+      return await renderFramePage(frameSet, outDir, offset, maxImages)
     } catch (error) {
       // A failed extraction must not leave a half-populated folder behind, so the
       // caller can trust that reported output directories are complete.

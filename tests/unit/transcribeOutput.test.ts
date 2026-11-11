@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile as writeFileActual } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile as writeFileActual } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -114,5 +114,23 @@ describe('transcribe_video output failures', () => {
     expect(await readFile(target, 'utf8')).toBe('Hello from the recording.\n')
     expect(result.artifacts?.[0]?.path).toBe(path.resolve(target))
     expect(result.data).toMatchObject({ outputWritten: true })
+  })
+
+  it('preserves an existing output and removes staging files when an overwrite fails', async () => {
+    const target = path.join(dir, 'transcript.txt')
+    await writeFileActual(target, 'previous transcript', 'utf8')
+    writeFailure.code = 'ENOSPC'
+
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target, overwrite: true },
+      createContext(createService()),
+    )
+
+    expect(await readFile(target, 'utf8')).toBe('previous transcript')
+    expect(result.data).toMatchObject({ outputWritten: false })
+    expect(result.warnings?.join(' ')).toContain('ENOSPC')
+    expect(await readdir(dir)).toEqual(
+      expect.not.arrayContaining([expect.stringMatching(/^\.video-analyzer-/)]),
+    )
   })
 })

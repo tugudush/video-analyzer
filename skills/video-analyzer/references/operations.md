@@ -136,8 +136,11 @@ media, including through symlinks or hard links, and an existing file is only re
 when `overwrite: true` is passed. It accepts a local path or a `file://` URI, and
 missing parent directories are created. `overwrite` only applies when `outputPath` is
 set, so re-running an example that writes to the same `.txt` needs `overwrite: true`.
+An overwrite replaces the target directory entry using a staged file; it does not
+follow a target symlink or change other hard links to the old file.
 
 If nothing is spoken, `data.noSpeech` is `true` and the summary says so.
+An empty or whitespace-only model response is an error, not evidence of silence.
 
 The transcript is the result; `outputPath` is a convenience. If the write fails
 (full disk, read-only volume, a directory in the way), the operation still returns
@@ -173,7 +176,8 @@ Write JPEG frames to disk. No AI, no API key.
 
 | Field            | Type                                            | Required                  | Notes                                              |
 | ---------------- | ----------------------------------------------- | ------------------------- | -------------------------------------------------- |
-| `videoPath`      | string                                          | yes                       | Must contain a video stream                        |
+| `videoPath`      | string                                          | for new extractions       | Must contain a video stream                        |
+| `frameSetDir`    | string                                          | for a saved page          | `data.outputDir` from an earlier extraction        |
 | `mode`           | `even` \| `interval` \| `timestamps` \| `scene` | no                        | Default `even`                                     |
 | `count`          | integer 1–500                                   | no                        | `even` mode, default 5                             |
 | `intervalSec`    | number ≥ 0.1                                    | required for `interval`   | Seconds between frames                             |
@@ -185,14 +189,23 @@ Write JPEG frames to disk. No AI, no API key.
 
 ```bash
 node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"scene","sceneThreshold":0.4}'
-node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"interval","intervalSec":5,"maxImages":10,"offset":10}'
+node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"interval","intervalSec":5,"maxImages":10}'
+# Use the first response's data.outputDir for the next page:
+node ./scripts/invoke.mjs extract_frames '{"frameSetDir":"./frames/frames-...","maxImages":10,"offset":10}'
 ```
 
 `images[]` lists every returned JPEG with an absolute `path` and a `t=` label
 where a timestamp is known. `data.hasMore` indicates another page exists.
+Paging with `frameSetDir` reads the saved frame set without accessing the source
+or rerunning ffmpeg. Supply only `frameSetDir`, `offset`, and `maxImages` for
+saved pages. Passing `videoPath` and an `offset` without `frameSetDir` remains a
+new extraction, with the corresponding download, processing and disk costs.
+Frames retain their aspect ratio, with a 1280-pixel longest-edge limit and no
+upscaling.
 
 Over MCP the frames are returned as inline image content, capped at about 2 MB of
-base64 per result — roughly 10–15 frames of typical footage. Frames past the cap
+base64 per result — roughly 10–15 frames of typical footage. The first frame is
+always inlined even when it exceeds that budget. Frames past the cap
 are not dropped: the result lists their paths in a text block instead, and the
 CLI envelope always carries paths only. Lower `maxImages` when every frame has to
 be inline.
@@ -204,11 +217,10 @@ written, the response adds a warning and `data.truncated: true`, and the pages
 describe that shorter list. `maxImages` limits the returned page, never how many
 frames are produced.
 
-Each `t=` label in `interval` mode is the presentation time ffmpeg reported for
-that frame (`pts_time`), not the frame index multiplied by `intervalSec`, so the
-label describes the pixels actually returned even for variable-frame-rate input
-or when the budget cuts the run short. If a build reports no frame times, the
-response falls back to the sampling grid and adds a warning saying so.
+Each `t=` label in `interval` mode is an approximate sampling-grid time, not
+the presentation time of the source frame selected by ffmpeg. Every page includes
+a warning about this distinction. A clip shorter than the interval returns one
+frame.
 
 `timestamps` mode validates the whole array against the media duration before the
 first ffmpeg call. A value at or beyond the end of the clip is rejected as
@@ -223,21 +235,20 @@ a summary saying the page is past the frames this request produced. An `outputDi
 (or `VIDEO_ANALYZER_OUTPUT_DIR`) that cannot be created is `OUTPUT_FAILED` naming
 the setting, not an internal error.
 
-`interval` mode also reports `data.expectedFrames` (how many frames the interval
-would produce across the whole media) and `data.frameBudget` (the budget that was
-applied), so a caller can decide whether to re-run without parsing the warning.
+`interval` mode also reports `data.expectedFrames` (an estimate based on media
+duration and interval) and `data.frameBudget` (the budget that was applied), so a
+caller can decide whether to re-run without parsing the warning.
 `data.truncated` is `true` whenever the written frames do not cover the whole
-media at the requested interval. In `scene` mode it means the list hit the scene
-ceiling (200 frames, or the configured budget when smaller).
+estimated sampling grid, whether due to the budget or a shorter output from
+ffmpeg. In `scene` mode it means the list hit the scene ceiling (200 frames, or
+the configured budget when smaller).
 
 Ceilings per extraction: `even` and `interval` stop at 500 frames, `scene` at
 200, and `timestamps` at 100 entries. No input raises these.
 
-Frames are written into a folder under the working directory (or
-`VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted. `data.outputDir` is the
-folder this request wrote into, which is always a newly created subfolder:
-supplying `outputDir` names the parent, not the folder itself. A directory
-reused across requests therefore never accumulates frames from earlier runs, so
-`totalFrames`, `offset`/`maxImages` paging, and `data.truncated` always describe
-only the frames the current request produced, and earlier frames are left
-alone instead of being overwritten by identically numbered files.
+Frames and a paging manifest are written into a folder under the working directory
+(or `VIDEO_ANALYZER_OUTPUT_DIR`). They persist until you delete that folder.
+For a new extraction, `data.outputDir` is a newly created subfolder: supplying
+`outputDir` names its parent. The manifest and JPEGs must remain intact for
+`frameSetDir` pagination. Missing or invalid saved data is reported as an error;
+previous frame sets are not overwritten by later extractions.

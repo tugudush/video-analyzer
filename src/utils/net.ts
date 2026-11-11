@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises'
+import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -112,10 +113,11 @@ function embeddedIpv4(values: number[]): string | undefined {
     number,
     number,
   ]
-  // ::ffff:a.b.c.d  and  64:ff9b::a.b.c.d
+  // IPv4-compatible, IPv4-mapped and well-known NAT64 forms.
+  const compatible = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0
   const mapped = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff
   const nat64 = g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0
-  if (!mapped && !nat64) return undefined
+  if (!compatible && !mapped && !nat64) return undefined
   return `${g6 >> 8}.${g6 & 0xff}.${g7 >> 8}.${g7 & 0xff}`
 }
 
@@ -139,7 +141,9 @@ export function isPrivateAddress(address: string): boolean {
   const first = values[0] as number
   if ((first & 0xfe00) === 0xfc00) return true // fc00::/7 unique local
   if ((first & 0xffc0) === 0xfe80) return true // fe80::/10 link local
+  if ((first & 0xffc0) === 0xfec0) return true // fec0::/10 deprecated site local
   if ((first & 0xff00) === 0xff00) return true // ff00::/8 multicast
+  if (first === 0x2002) return true // 2002::/16 6to4
 
   const inner = embeddedIpv4(values)
   return inner ? isPrivateAddress(inner) : false
@@ -147,6 +151,16 @@ export function isPrivateAddress(address: string): boolean {
 
 export interface UrlSafetyOptions {
   allowPrivateHosts?: boolean
+}
+
+/** Remove credentials and query/fragment data before a URL reaches diagnostics. */
+export function redactedUrl(url: URL): string {
+  const safe = new URL(url.href)
+  safe.username = ''
+  safe.password = ''
+  safe.search = ''
+  safe.hash = ''
+  return safe.href
 }
 
 /** Validate that a URL is an http(s) URL pointing at a public address. */
@@ -158,7 +172,7 @@ export async function assertSafeHttpUrl(
   try {
     url = new URL(rawUrl)
   } catch {
-    throw new VideoAnalyzerError('URL_REJECTED', `Not a valid absolute URL: ${rawUrl}`, {
+    throw new VideoAnalyzerError('URL_REJECTED', 'Not a valid absolute URL.', {
       hint: 'Provide an http:// or https:// URL, a local file path, or a file:// URI.',
     })
   }
@@ -217,6 +231,7 @@ export interface DownloadResult {
   bytesWritten: number
   contentType: string | undefined
   finalUrl: string
+  sha256: string
 }
 
 export interface DownloadOptions extends UrlSafetyOptions {
@@ -257,14 +272,14 @@ export async function downloadToFile(
         `The download did not finish within ${options.timeoutMs} ms.`,
         {
           hint: 'The download budget is max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s). Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for large files or slow links.',
-          details: { timeoutMs: options.timeoutMs, url: current.href, stage },
+          details: { timeoutMs: options.timeoutMs, url: redactedUrl(current), stage },
           cause: error,
         },
       )
     }
 
     return stage === 'download'
-      ? new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to download ${current.href}`, {
+      ? new VideoAnalyzerError('DOWNLOAD_FAILED', `Failed to download ${redactedUrl(current)}`, {
           hint: 'Check network access and that the URL is publicly reachable.',
           cause: error,
         })
@@ -291,10 +306,18 @@ export async function downloadToFile(
       if (!location) {
         throw new VideoAnalyzerError(
           'DOWNLOAD_FAILED',
-          `Redirect without a Location header from ${current.href}`,
+          `Redirect without a Location header from ${redactedUrl(current)}`,
         )
       }
-      current = await assertSafeHttpUrl(new URL(location, current).href, options)
+      let next: URL
+      try {
+        next = new URL(location, current)
+      } catch (error) {
+        throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'Redirect has an invalid Location.', {
+          cause: error,
+        })
+      }
+      current = await assertSafeHttpUrl(next.href, options)
       continue
     }
 
@@ -303,21 +326,25 @@ export async function downloadToFile(
   }
 
   if (!response) {
-    throw new VideoAnalyzerError('DOWNLOAD_FAILED', `Too many redirects while fetching ${url}`, {
-      hint: `More than ${MAX_REDIRECTS} redirects were followed.`,
-    })
+    throw new VideoAnalyzerError(
+      'DOWNLOAD_FAILED',
+      `Too many redirects while fetching ${redactedUrl(current)}`,
+      { hint: `More than ${MAX_REDIRECTS} redirects were followed.` },
+    )
   }
 
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
     throw new VideoAnalyzerError(
       'DOWNLOAD_FAILED',
       `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
-      { details: { url: current.href, status: response.status } },
+      { details: { url: redactedUrl(current), status: response.status } },
     )
   }
 
   const declaredLength = Number(response.headers.get('content-length') ?? Number.NaN)
   if (Number.isFinite(declaredLength) && declaredLength > options.maxBytes) {
+    await response.body?.cancel().catch(() => undefined)
     throw new VideoAnalyzerError(
       'DOWNLOAD_FAILED',
       'Remote file exceeds the download size limit.',
@@ -334,6 +361,7 @@ export async function downloadToFile(
 
   const stream = Readable.fromWeb(response.body as WebReadableStream<Uint8Array>)
   let bytesWritten = 0
+  const hash = createHash('sha256')
   const output = createWriteStream(destPath)
 
   try {
@@ -352,6 +380,7 @@ export async function downloadToFile(
               },
             )
           }
+          hash.update(chunk)
           yield chunk
         }
       },
@@ -367,5 +396,6 @@ export async function downloadToFile(
     bytesWritten,
     contentType: response.headers.get('content-type') ?? undefined,
     finalUrl: current.href,
+    sha256: hash.digest('hex'),
   }
 }

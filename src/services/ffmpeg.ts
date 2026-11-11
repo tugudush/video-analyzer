@@ -245,9 +245,13 @@ export function resolveFrameBudget(configured: number): number {
   return Math.max(1, Math.min(Math.floor(configured), MAX_FRAMES_PER_EXTRACTION))
 }
 
-function frameArgs(options: FrameExtractionOptions): string[] {
+function scaleFilter(options: FrameExtractionOptions): string {
   const width = options.maxWidth ?? 1280
-  return ['-vf', `scale=${width}:-2`, '-q:v', '3']
+  return `scale=w='min(${width},iw)':h='min(${width},ih)':force_original_aspect_ratio=decrease`
+}
+
+function frameArgs(options: FrameExtractionOptions): string[] {
+  return ['-vf', scaleFilter(options), '-q:v', '3']
 }
 
 /**
@@ -323,7 +327,9 @@ export async function extractFramesEvenly(
       '-i',
       filePath,
       '-vf',
-      `fps=${fps.toFixed(6)},scale=${options.maxWidth ?? 1280}:-2`,
+      `fps=${fps.toFixed(6)},${scaleFilter(options)}`,
+      '-frames:v',
+      String(count),
       '-q:v',
       '3',
       pattern,
@@ -338,15 +344,8 @@ export async function extractFramesEvenly(
 export interface IntervalExtractionResult {
   /** Frames written to disk, in filename order. */
   paths: string[]
-  /**
-   * Presentation time of each written frame, in the same order as `paths`.
-   *
-   * Parsed from ffmpeg's `showinfo` output so the label describes the pixels
-   * returned rather than the nominal sampling grid.
-   */
+  /** Approximate sampling-grid time for each frame, in the same order as `paths`. */
   timestamps: number[]
-  /** False when ffmpeg reported no `pts_time` and the grid was used instead. */
-  timestampsExact: boolean
   /** Frames the interval would produce across the whole media, before the budget. */
   expectedFrames: number
   /** Frame budget that was enforced while ffmpeg was writing. */
@@ -382,21 +381,17 @@ export async function extractFramesAtInterval(
   const frameBudget = resolveFrameBudget(options.maxFrames)
 
   const pattern = path.join(options.outDir, 'frame-%04d.jpg')
-  // `showinfo` reports the presentation time of every frame the filter chain
-  // emits, so the timestamps returned to the caller come from the frames that
-  // were actually written instead of being assumed from the frame index.
-  const { stderr } = await run(
+  await run(
     config.ffmpegPath,
     [
       '-hide_banner',
       '-loglevel',
-      'info',
-      '-nostats',
+      'error',
       '-y',
       '-i',
       filePath,
       '-vf',
-      `fps=1/${intervalSec},scale=${options.maxWidth ?? 1280}:-2,showinfo`,
+      `fps=1/${intervalSec}:round=up,${scaleFilter(options)}`,
       // Stop the encoder at the budget so a long input cannot fill the disk.
       '-frames:v',
       String(frameBudget),
@@ -409,15 +404,11 @@ export async function extractFramesAtInterval(
   )
 
   const paths = await listFrames(options.outDir)
-  const reported = [...stderr.matchAll(/pts_time:([0-9.]+)/g)]
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value) && value >= 0)
-  const timestamps = paths.map((_, index) => reported[index] ?? index * intervalSec)
+  const timestamps = paths.map((_, index) => index * intervalSec)
 
   return {
     paths,
     timestamps,
-    timestampsExact: paths.every((_, index) => reported[index] !== undefined),
     expectedFrames,
     frameBudget,
     // Compare against what was actually written: a shortfall means the list

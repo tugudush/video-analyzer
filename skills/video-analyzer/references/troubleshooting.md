@@ -170,12 +170,15 @@ export VIDEO_ANALYZER_CLI_PATH=/path/to/video-analyzer/dist/cli.js
 ## Results look wrong
 
 - **Timestamps are off:** `search_timestamp` is model-estimated. Confirm with
-  `extract_frames` at nearby times before trusting a cut.
+  `extract_frames` at nearby times before trusting a cut. Interval-frame labels
+  are approximate sampling-grid times, not exact source-frame timestamps.
 - **Transcript is rough:** Gemini transcription is plain text with no diarization.
   Use a dedicated speech-to-text service if that is required.
-- **Fewer frames than expected:** `data.truncated: true` means a ceiling cut the
-  list. In `interval` mode that is the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`,
-  hard ceiling 500): raise the budget, increase `intervalSec`, or use
-  `mode: "even"` to spread a fixed count across the clip. In `scene` mode it is
+- **Fewer frames than expected:** In `interval` mode `data.truncated: true` means
+  fewer frames were produced than the duration-based estimate. If the warning
+  names the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`, hard ceiling 500), raise
+  the budget, increase `intervalSec`, or use `mode: "even"` to spread a fixed
+  count across the clip. Otherwise, check the media's timing and duration. In
+  `scene` mode truncation means the list hit
   the 200-frame scene ceiling (or the configured budget when smaller): raise
   `sceneThreshold` so fewer changes match.

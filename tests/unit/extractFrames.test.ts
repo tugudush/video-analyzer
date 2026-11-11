@@ -35,8 +35,6 @@ interface FakeMedia {
   hasVideo?: boolean
   /** Report success without writing output files, to model a phantom path. */
   writeOutputs?: boolean
-  /** Shift every reported `pts_time`, to prove labels come from ffmpeg. */
-  ptsOffset?: number
 }
 
 type Callback = (error: Error | null, result?: { stdout: string; stderr: string }) => void
@@ -57,7 +55,6 @@ function installFakes({
   sceneTimes = [],
   hasVideo = true,
   writeOutputs = true,
-  ptsOffset = 0,
 }: FakeMedia): {
   frameLimit: () => string | undefined
 } {
@@ -108,22 +105,13 @@ function installFakes({
 
       const target = args[args.length - 1] as string
       const targets: string[] = []
-      let stderr = ''
       if (target.includes('%04d')) {
         const expected = framesForInterval(args, durationSeconds)
-        const interval = intervalOf(args)
         const allowed =
           lastFrameLimit === undefined ? expected : Math.min(Number(lastFrameLimit), expected)
         for (let index = 1; index <= allowed; index++) {
           targets.push(target.replace('%04d', String(index).padStart(4, '0')))
         }
-        // Real ffmpeg with `showinfo` reports every frame's presentation time.
-        stderr = targets
-          .map(
-            (_, index) =>
-              `[Parsed_showinfo_3 @ 0x0] n:${index} pts:0 pts_time:${(index * interval + ptsOffset).toFixed(3)}`,
-          )
-          .join('\n')
       } else if (lastFrameLimit === undefined || Number(lastFrameLimit) > 0) {
         targets.push(target)
       }
@@ -133,7 +121,7 @@ function installFakes({
           if (writeOutputs) {
             for (const framePath of targets) await writeFile(framePath, `frame ${framePath}`)
           }
-          cb(null, { stdout: '', stderr })
+          cb(null, { stdout: '', stderr: '' })
         } catch (error) {
           cb(error as Error)
         }
@@ -172,7 +160,9 @@ describe('extract_frames frame budgets', () => {
 
     expect(frameLimit()).toBe('3')
     // 60 frames would fit the interval; only the budgeted three may exist.
-    expect(await readdir(artifactDirOf(result.data))).toHaveLength(3)
+    expect(
+      (await readdir(artifactDirOf(result.data))).filter((entry) => entry.endsWith('.jpg')),
+    ).toHaveLength(3)
     expect(result.images).toHaveLength(3)
     expect(result.data).toMatchObject({ totalFrames: 3, truncated: true })
     const warnings = result.warnings?.join(' ') ?? ''
@@ -192,7 +182,9 @@ describe('extract_frames frame budgets', () => {
     )
 
     // 600 frames would fit the interval, but the hard ceiling applies.
-    expect(await readdir(artifactDirOf(result.data))).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
+    expect(
+      (await readdir(artifactDirOf(result.data))).filter((entry) => entry.endsWith('.jpg')),
+    ).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
     expect(result.data).toMatchObject({ totalFrames: MAX_FRAMES_PER_EXTRACTION, truncated: true })
     expect(result.warnings?.join(' ')).toContain('hard ceiling')
   })
@@ -227,7 +219,7 @@ describe('extract_frames frame budgets', () => {
     )
 
     expect(result.data).toMatchObject({ totalFrames: 2, truncated: false })
-    expect(result.warnings ?? []).toHaveLength(0)
+    expect(result.warnings?.join(' ')).toContain('approximate sampling-grid')
   })
 
   it('pages the budgeted frames without changing how many are produced', async () => {
@@ -241,9 +233,91 @@ describe('extract_frames frame budgets', () => {
       config,
     )
 
-    expect(await readdir(artifactDirOf(result.data))).toHaveLength(5)
+    expect(
+      (await readdir(artifactDirOf(result.data))).filter((entry) => entry.endsWith('.jpg')),
+    ).toHaveLength(5)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ totalFrames: 5, offset: 0, hasMore: true })
+  })
+
+  it('pages a saved frame set without probing or extracting again', async () => {
+    installFakes({ durationSeconds: 10 })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '3' })
+    const first = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 1 },
+      config,
+    )
+    const frameSetDir = artifactDirOf(first.data)
+    const calls = mocks.execFile.mock.calls.length
+    await rm(source)
+
+    const second = await executeOperation(
+      extractFramesOperation,
+      { frameSetDir, offset: 1, maxImages: 1 },
+      config,
+    )
+    expect(mocks.execFile.mock.calls).toHaveLength(calls)
+    expect(second.data).toMatchObject({
+      mode: 'interval',
+      outputDir: frameSetDir,
+      totalFrames: 3,
+      offset: 1,
+      hasMore: true,
+      truncated: true,
+      timestamps: [1],
+      expectedFrames: 10,
+      frameBudget: 3,
+    })
+    expect(second.images?.[0]?.path).toBe(path.join(frameSetDir, 'frame-0002.jpg'))
+    expect(second.warnings?.join(' ')).toContain('3-frame budget')
+
+    const third = await executeOperation(
+      extractFramesOperation,
+      { frameSetDir, offset: 2, maxImages: 1 },
+      config,
+    )
+    expect(third.data).toMatchObject({ hasMore: false, timestamps: [2] })
+    expect(mocks.execFile.mock.calls).toHaveLength(calls)
+  })
+
+  it('rejects invalid frame sets and conflicting extraction options', async () => {
+    const config = loadConfig({})
+    await expect(
+      executeOperation(extractFramesOperation, { frameSetDir: dir, videoPath: source }, config),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(
+      executeOperation(extractFramesOperation, { frameSetDir: dir }, config),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await writeFile(
+      path.join(dir, '.video-analyzer-frames.json'),
+      JSON.stringify({
+        version: 1,
+        mode: 'even',
+        files: ['../outside.jpg'],
+        timestamps: [],
+        truncated: false,
+        warnings: [],
+      }),
+    )
+    await expect(
+      executeOperation(extractFramesOperation, { frameSetDir: dir }, config),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('reports a missing frame in a saved page', async () => {
+    installFakes({ durationSeconds: 2 })
+    const config = loadConfig({})
+    const first = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 1 },
+      config,
+    )
+    const frameSetDir = artifactDirOf(first.data)
+    await rm(path.join(frameSetDir, 'frame-0002.jpg'))
+    await expect(
+      executeOperation(extractFramesOperation, { frameSetDir, offset: 1 }, config),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT', message: expect.stringContaining('missing') })
   })
 
   it('exposes the expected count and applied budget in data', async () => {
@@ -412,14 +486,14 @@ describe('extract_frames output directory isolation', () => {
     )
 
     expect(second.data).toMatchObject({ totalFrames: 3, truncated: false })
-    expect(second.warnings ?? []).toHaveLength(0)
+    expect(second.warnings?.join(' ')).toContain('approximate sampling-grid')
 
     const firstDir = artifactDirOf(first.data)
     const secondDir = artifactDirOf(second.data)
     expect(secondDir).not.toBe(firstDir)
     // The earlier run's frames are untouched and never reported by the new one.
-    expect(await readdir(firstDir)).toHaveLength(10)
-    expect(await readdir(secondDir)).toHaveLength(3)
+    expect((await readdir(firstDir)).filter((entry) => entry.endsWith('.jpg'))).toHaveLength(10)
+    expect((await readdir(secondDir)).filter((entry) => entry.endsWith('.jpg'))).toHaveLength(3)
     for (const image of second.images ?? []) {
       expect(image.path.startsWith(secondDir)).toBe(true)
     }
@@ -600,8 +674,8 @@ describe('extract_frames interval timestamps', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('uses the presentation times ffmpeg reports, not the frame index', async () => {
-    installFakes({ durationSeconds: 4, ptsOffset: 0.5 })
+  it('labels sampling-grid times as approximate on every page', async () => {
+    installFakes({ durationSeconds: 4 })
     const config = loadConfig({})
 
     const result = await executeOperation(
@@ -610,14 +684,20 @@ describe('extract_frames interval timestamps', () => {
       config,
     )
 
-    expect(result.data).toMatchObject({ timestamps: [0.5, 1.5, 2.5, 3.5] })
+    expect(result.data).toMatchObject({ timestamps: [0, 1, 2, 3] })
     expect(result.images?.map((image) => image.label)).toEqual([
-      't=0.50s',
-      't=1.50s',
-      't=2.50s',
-      't=3.50s',
+      't=0.00s',
+      't=1.00s',
+      't=2.00s',
+      't=3.00s',
     ])
-    expect(result.warnings ?? []).toHaveLength(0)
+    expect(result.warnings?.join(' ')).toContain('approximate sampling-grid')
+    const next = await executeOperation(
+      extractFramesOperation,
+      { frameSetDir: artifactDirOf(result.data), offset: 1 },
+      config,
+    )
+    expect(next.warnings?.join(' ')).toContain('approximate sampling-grid')
   })
 })
 

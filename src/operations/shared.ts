@@ -85,14 +85,14 @@ export interface UploadIdentity {
    * lands in a new temp directory on every call).
    */
   cacheKey?: string
+  retainSource?: () => () => Promise<void>
 }
 
 /**
  * Describe a resolved source for the Gemini upload cache.
  *
  * Local files are identified by path plus size and mtime. A downloaded copy is
- * identified by its origin instead, so repeated calls for the same URL reuse one
- * upload rather than uploading the same bytes again under a new temp path.
+ * identified by content, so only identical downloads reuse an upload.
  */
 export async function statForUpload(media: ResolvedMedia): Promise<UploadIdentity> {
   const info = await stat(media.path)
@@ -100,6 +100,7 @@ export async function statForUpload(media: ResolvedMedia): Promise<UploadIdentit
     sizeBytes: info.size,
     mtimeMs: info.mtimeMs,
     ...(media.cacheKey ? { cacheKey: media.cacheKey } : {}),
+    ...(media.retainSource ? { retainSource: media.retainSource } : {}),
   }
 }
 

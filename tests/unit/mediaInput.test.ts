@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
+import { statForUpload } from '../../src/operations/shared.js'
+import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
 import { resolveMediaInput } from '../../src/services/mediaInput.js'
+import { createLogger } from '../../src/utils/logger.js'
 
 const mocks = vi.hoisted(() => ({ lookup: vi.fn(), execFile: vi.fn() }))
 
@@ -187,6 +190,16 @@ describe('remote media input policy', () => {
     })
   })
 
+  it('redacts the final URL when a downloaded media type is unknown', async () => {
+    fetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2, 3])))
+    await expect(
+      resolveMediaInput('https://example.com/media?token=example-secret#private', config),
+    ).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT',
+      details: { url: 'https://example.com/media' },
+    })
+  })
+
   it('stops a download that outgrows the limit while streaming', async () => {
     // No Content-Length header, so only the streaming guard can catch this.
     fetchMock.mockResolvedValue(
@@ -218,6 +231,102 @@ describe('remote media input policy', () => {
       expect(first.cacheKey).toBeDefined()
       expect(second.cacheKey).toBe(first.cacheKey)
     } finally {
+      await first.cleanup()
+      await second.cleanup()
+    }
+  })
+
+  it('distinguishes changed same-length downloads, including concurrent uploads', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response('AAAA', { headers: { 'content-type': 'video/mp4' } }))
+      .mockResolvedValueOnce(new Response('BBBB', { headers: { 'content-type': 'video/mp4' } }))
+    const first = await resolveMediaInput('https://example.com/media.mp4', config)
+    const second = await resolveMediaInput('https://example.com/media.mp4', config)
+    const uploaded: string[] = []
+    const handle = { name: 'files/a', uri: 'file:a', mimeType: 'video/mp4', state: 'ACTIVE' }
+    const api: GeminiApi = {
+      uploadFile: async ({ path }) => {
+        uploaded.push(await readFile(path, 'utf8'))
+        return handle
+      },
+      getFile: async () => handle,
+      generateContent: async () => '',
+    }
+    const service = new GeminiMediaService({ config, logger: createLogger('silent'), api })
+    try {
+      expect(first.cacheKey).not.toBe(second.cacheKey)
+      for (const media of [first, second]) {
+        await service.ensureUploaded({
+          path: media.path,
+          mimeType: media.mimeType,
+          ...(await statForUpload(media)),
+        })
+      }
+      const concurrentService = new GeminiMediaService({
+        config,
+        logger: createLogger('silent'),
+        api,
+      })
+      await Promise.all(
+        [first, second].map(async (media) =>
+          concurrentService.ensureUploaded({
+            path: media.path,
+            mimeType: media.mimeType,
+            ...(await statForUpload(media)),
+          }),
+        ),
+      )
+      expect(uploaded.toSorted()).toEqual(['AAAA', 'AAAA', 'BBBB', 'BBBB'])
+    } finally {
+      await first.cleanup()
+      await second.cleanup()
+    }
+  })
+
+  it('retains the leader download until a shared upload finishes after cancellation', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('media', { headers: { 'content-type': 'video/mp4' } }),
+    )
+    const first = await resolveMediaInput('https://example.com/media.mp4', config)
+    const second = await resolveMediaInput('https://example.com/media.mp4', config)
+    let releaseUpload!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseUpload = resolve
+    })
+    const handle = { name: 'files/a', uri: 'file:a', mimeType: 'video/mp4', state: 'ACTIVE' }
+    const api: GeminiApi = {
+      uploadFile: async ({ path }) => {
+        await gate
+        expect(await readFile(path, 'utf8')).toBe('media')
+        return handle
+      },
+      getFile: async () => handle,
+      generateContent: async () => '',
+    }
+    const service = new GeminiMediaService({ config, logger: createLogger('silent'), api })
+    const controller = new AbortController()
+    try {
+      const leader = service.ensureUploaded({
+        path: first.path,
+        mimeType: first.mimeType,
+        ...(await statForUpload(first)),
+        signal: controller.signal,
+      })
+      const leaderResult = expect(leader).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+      const follower = service.ensureUploaded({
+        path: second.path,
+        mimeType: second.mimeType,
+        ...(await statForUpload(second)),
+      })
+      controller.abort()
+      await leaderResult
+      await first.cleanup()
+      expect(await readFile(first.path, 'utf8')).toBe('media')
+      releaseUpload()
+      await expect(follower).resolves.toMatchObject({ state: 'ACTIVE' })
+      await expect(readFile(first.path)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      releaseUpload()
       await first.cleanup()
       await second.cleanup()
     }

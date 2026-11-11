@@ -1,4 +1,4 @@
-import { stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
@@ -139,14 +139,26 @@ async function resolveTranscriptTarget(
 /**
  * Write the transcript without clobbering a file the caller did not approve.
  *
- * The `wx` flag makes the no-overwrite promise atomic: a target that appears
- * after validation fails the write instead of being silently replaced. Parent
- * directories are created here, so an earlier failure leaves no trace.
+ * The `wx` flag makes the no-overwrite promise atomic. For an overwrite, stage
+ * the content separately and replace the target entry instead of following a
+ * link that could have appeared after validation.
  */
 async function writeTranscript(target: string, text: string, overwrite: boolean): Promise<void> {
   try {
     await ensureDir(path.dirname(target))
-    await writeFile(target, text, { encoding: 'utf8', flag: overwrite ? 'w' : 'wx' })
+    if (!overwrite) {
+      await writeFile(target, text, { encoding: 'utf8', flag: 'wx' })
+      return
+    }
+
+    const stagingDir = await mkdtemp(path.join(path.dirname(target), '.video-analyzer-'))
+    try {
+      const staged = path.join(stagingDir, 'transcript')
+      await writeFile(staged, text, { encoding: 'utf8', flag: 'wx' })
+      await rename(staged, target)
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true })
+    }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'EEXIST') throw existingTargetError(target, error)
@@ -202,9 +214,16 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
       })
 
       const text = transcript.trim()
-      // An empty reply is not a transcript: `generateWithFile` only rejects a
-      // missing response body, so a whitespace-only answer reaches this point.
-      const noSpeech = text === '' || /\bNO_SPEECH\b/.test(text)
+      if (!text) {
+        throw new VideoAnalyzerError(
+          'GEMINI_REQUEST_FAILED',
+          'Gemini returned an empty transcript.',
+          {
+            hint: 'Retry the transcription; an empty response does not establish that the media has no speech.',
+          },
+        )
+      }
+      const noSpeech = text === 'NO_SPEECH'
       const warnings: string[] = []
       const artifacts: Artifact[] = []
 

@@ -103,8 +103,10 @@ node ./scripts/invoke.mjs transcribe_video '{"videoPath":"./interview.m4a","lang
 node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
 ```
 
-`outputDir` names the parent: each request writes into a new subfolder of it, and
-`data.outputDir` / `images[]` report the files actually produced.
+`outputDir` names the parent for a new extraction; `data.outputDir` / `images[]`
+report the files actually produced. For the next page, pass
+`{"frameSetDir":"<data.outputDir>","offset":20,"maxImages":20}` rather than
+extracting again. The frame set remains on disk until deleted.
 
 ## Presenting Results
 

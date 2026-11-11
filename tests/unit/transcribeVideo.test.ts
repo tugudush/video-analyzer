@@ -186,6 +186,42 @@ describe('transcribe_video output target', () => {
     expect(await readFile(source, 'utf8')).toBe(SOURCE_BYTES)
   })
 
+  it('does not truncate the source when the output becomes a hard link during generation', async () => {
+    const target = path.join(dir, 'transcript.txt')
+    const { api, service } = createFakeGemini()
+    api.generateContent.mockImplementation(async () => {
+      await link(source, target)
+      return TRANSCRIPT
+    })
+
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target, overwrite: true },
+      createContext(service),
+    )
+
+    expect(await readFile(source, 'utf8')).toBe(SOURCE_BYTES)
+    expect(await readFile(target, 'utf8')).toBe(`${TRANSCRIPT}\n`)
+    expect(result.data).toMatchObject({ outputWritten: true })
+  })
+
+  it('does not overwrite a target created during generation without permission', async () => {
+    const target = path.join(dir, 'transcript.txt')
+    const { api, service } = createFakeGemini()
+    api.generateContent.mockImplementation(async () => {
+      await writeFile(target, 'other work', 'utf8')
+      return TRANSCRIPT
+    })
+
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target },
+      createContext(service),
+    )
+
+    expect(await readFile(target, 'utf8')).toBe('other work')
+    expect(result.data).toMatchObject({ outputWritten: false })
+    expect(result.warnings?.join(' ')).toContain('Refusing to overwrite')
+  })
+
   it('writes a new transcript next to the media', async () => {
     const target = path.join(dir, 'transcript.txt')
     const { service } = createFakeGemini()
@@ -255,12 +291,34 @@ describe('transcribe_video output target', () => {
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 
-  it('treats a whitespace-only reply as no speech, not an empty transcript', async () => {
+  it('reports a whitespace-only reply as an error rather than claiming no speech', async () => {
     const { service } = createFakeGemini('   \n\t ')
 
-    const result = await transcribeVideoOperation.run({ videoPath: source }, createContext(service))
+    await expect(
+      transcribeVideoOperation.run({ videoPath: source }, createContext(service)),
+    ).rejects.toMatchObject({
+      code: 'GEMINI_REQUEST_FAILED',
+      message: expect.stringContaining('empty'),
+    })
+  })
 
+  it('treats only the complete sentinel as no speech', async () => {
+    const { service } = createFakeGemini('NO_SPEECH')
+    const result = await transcribeVideoOperation.run({ videoPath: source }, createContext(service))
     expect(result.summary).toBe('No audible speech detected.')
-    expect(result.data).toMatchObject({ noSpeech: true, characters: 0 })
+    expect(result.data).toMatchObject({ noSpeech: true })
+  })
+
+  it('preserves and writes a transcript containing the sentinel as spoken text', async () => {
+    const transcript = 'The status code is NO_SPEECH and should be handled.'
+    const target = path.join(dir, 'transcript.txt')
+    const { service } = createFakeGemini(transcript)
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target },
+      createContext(service),
+    )
+    expect(result.summary).toBe(transcript)
+    expect(result.data).toMatchObject({ noSpeech: false, outputWritten: true })
+    expect(await readFile(target, 'utf8')).toBe(`${transcript}\n`)
   })
 })

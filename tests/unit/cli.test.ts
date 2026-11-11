@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { defaultCliIO, parseArgs, readStdinUntilIdle, runCli } from '../../src/adapters/cli.js'
+import { defaultCliIO, parseArgs, readStdinToEnd, runCli } from '../../src/adapters/cli.js'
 import { VERSION } from '../../src/version.js'
 
 function capture() {
@@ -50,25 +50,37 @@ describe('parseArgs', () => {
   })
 })
 
-describe('readStdinUntilIdle', () => {
+describe('readStdinToEnd', () => {
   it('reads a piped payload to EOF', async () => {
     const stream = Readable.from([Buffer.from('{"videoPath":"a.mp4"}')])
-    await expect(readStdinUntilIdle(stream, 50)).resolves.toBe('{"videoPath":"a.mp4"}')
+    await expect(readStdinToEnd(stream)).resolves.toBe('{"videoPath":"a.mp4"}')
   })
 
-  it('treats a silent stream as no payload instead of blocking', async () => {
+  it('reads delayed chunks through EOF even after idle periods', async () => {
     const stream = new PassThrough()
-    const startedAt = Date.now()
-
-    await expect(readStdinUntilIdle(stream, 20)).resolves.toBeUndefined()
-
-    expect(Date.now() - startedAt).toBeLessThan(2_000)
-    stream.destroy()
+    const result = readStdinToEnd(stream)
+    await new Promise((resolve) => setTimeout(resolve, 550))
+    stream.write('{"videoPath":')
+    await new Promise((resolve) => setTimeout(resolve, 550))
+    stream.end('"a.mp4"}')
+    await expect(result).resolves.toBe('{"videoPath":"a.mp4"}')
   })
 
   it('returns undefined for whitespace-only input', async () => {
     const stream = Readable.from([Buffer.from('  \n ')])
-    await expect(readStdinUntilIdle(stream, 50)).resolves.toBeUndefined()
+    await expect(readStdinToEnd(stream)).resolves.toBeUndefined()
+  })
+
+  it('reports a stream error instead of returning partial data', async () => {
+    const stream = new PassThrough()
+    const result = readStdinToEnd(stream)
+    const assertion = expect(result).rejects.toMatchObject({
+      code: 'INPUT_NOT_FOUND',
+      message: 'Could not read standard input.',
+    })
+    stream.write('{"partial":')
+    stream.destroy(new Error('broken pipe'))
+    await assertion
   })
 })
 

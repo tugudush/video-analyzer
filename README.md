@@ -208,6 +208,9 @@ video-analyzer get_video_info --input-file args.json
 cat args.json | video-analyzer get_video_info
 ```
 
+Piped input is read through EOF, including pauses between chunks. Close the pipe
+after writing JSON; use `--input` or `--input-file` when stdin is not being used.
+
 Operations and `list` print one JSON envelope on stdout and write diagnostics to stderr; `--version` and `help` print plain text:
 
 ```json
@@ -245,6 +248,9 @@ video-analyzer transcribe_video --input '{"videoPath":"./interview.m4a","outputP
 
 # Frames at specific times (a new subfolder of ./frames)
 video-analyzer extract_frames --input '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
+
+# Read the next page from the first result's data.outputDir; no new extraction
+video-analyzer extract_frames --input '{"frameSetDir":"./frames/frames-...","offset":20,"maxImages":20}'
 ```
 
 Full argument reference: [`skills/video-analyzer/references/operations.md`](skills/video-analyzer/references/operations.md).
@@ -284,12 +290,13 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 
 - **Single provider.** If Gemini is down or out of quota, AI operations fail with a clear error. There is no fallback provider by design.
 - **Timestamps are estimates.** `search_timestamp` reflects Gemini's internal sampling. Confirm with `extract_frames` before cutting.
+- **Interval frame labels are approximate.** They describe the sampling grid, not the exact presentation times of the source frames.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
-- **MCP inlines extracted frames.** `extract_frames` embeds JPEGs in the MCP tool result up to a ~2 MB base64 budget per call; frames past the budget are reported by path instead. The CLI returns paths only.
+- **MCP inlines extracted frames.** `extract_frames` embeds JPEGs up to a ~2 MB base64 budget per call (the first frame is always included); frames past the budget are reported by path instead. The CLI returns paths only. Frames are capped at a 1280-pixel longest edge without upscaling.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
-- **Frame extraction writes to disk.** Returned image paths persist until you delete them. By default they go into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
+- **Frame extraction writes to disk.** Each extraction persists frames and a paging manifest until you delete its `data.outputDir`. Later pages use `frameSetDir` and do not download or extract again. By default output goes into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
 
 ## Architecture
 
