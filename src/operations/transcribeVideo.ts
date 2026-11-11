@@ -3,7 +3,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
 import { invalidInput } from '../utils/errors.js'
-import { isSameFile } from '../utils/fsUtils.js'
+import { ensureDir, isSameFile } from '../utils/fsUtils.js'
 import { getGeminiService, prepareMedia, statForUpload } from './shared.js'
 import type { Operation } from './types.js'
 
@@ -28,13 +28,13 @@ export const transcribeVideoInput = z.object({
     .string()
     .optional()
     .describe(
-      'Optional file path to also write the transcript to. Parent directories are created. The source media is never overwritten.',
+      'Optional file path (local path or file:// URI) to also write the transcript to. Missing parent directories are created. The source media is never overwritten.',
     ),
   overwrite: z
     .boolean()
     .optional()
     .describe(
-      'Replace an existing output file. Defaults to false, which rejects an existing target instead of silently overwriting it.',
+      'Replace an existing output file. Defaults to false, which rejects an existing target instead of silently overwriting it. Only used together with outputPath.',
     ),
 })
 
@@ -69,26 +69,52 @@ function localSourcePath(videoPath: string): string | undefined {
   return normalizeLocalPath(trimmed)
 }
 
-async function assertNotSourceAlias(target: string, sourcePath: string): Promise<void> {
-  if (!(await isSameFile(target, sourcePath))) return
-  throw invalidInput('outputPath must not refer to the source media file.', {
+function sourceAliasError(sourcePath: string, target: string) {
+  return invalidInput('outputPath must not refer to the source media file.', {
     hint: 'Writing the transcript there would destroy the original video or audio. Choose a different path, for example "./transcript.txt".',
     details: { videoPath: sourcePath, outputPath: target },
   })
 }
 
 /**
+ * Output-target refusals are `INVALID_INPUT`: the caller can act on them by
+ * changing the request. `OUTPUT_FAILED` stays reserved for failures while
+ * writing, which `writeTranscript` surfaces unchanged.
+ */
+function existingTargetError(target: string, cause?: unknown) {
+  return invalidInput(`Refusing to overwrite an existing file: ${target}`, {
+    hint: 'Pass overwrite: true to replace it, or choose a different output path.',
+    details: { outputPath: target },
+    ...(cause === undefined ? {} : { cause }),
+  })
+}
+
+function directoryTargetError(target: string, cause?: unknown) {
+  return invalidInput(`outputPath is a directory, not a file: ${target}`, {
+    hint: 'Pass a file path such as "./transcript.txt".',
+    ...(cause === undefined ? {} : { cause }),
+  })
+}
+
+async function assertNotSourceAlias(target: string, sourcePath: string): Promise<void> {
+  if (!(await isSameFile(target, sourcePath))) return
+  throw sourceAliasError(sourcePath, target)
+}
+
+/**
  * Validate the output target before any upload or generation work.
  *
- * The source media is never an acceptable target, and an existing file is only
- * replaced when the caller explicitly asks for it.
+ * The source media is never an acceptable target, an existing file is only
+ * replaced when the caller explicitly asks for it, and missing parent
+ * directories are created so the documented behaviour holds.
  */
 async function resolveTranscriptTarget(
   outputPath: string,
   overwrite: boolean,
   sourcePath: string | undefined,
 ): Promise<string> {
-  const extension = path.extname(outputPath).toLowerCase()
+  const target = normalizeLocalPath(outputPath)
+  const extension = path.extname(target).toLowerCase()
   if (SUBTITLE_EXTENSIONS.has(extension)) {
     throw invalidInput(
       `Subtitle output (${extension}) is not supported: Gemini does not provide reliable per-cue timings.`,
@@ -98,25 +124,33 @@ async function resolveTranscriptTarget(
     )
   }
 
-  const target = path.resolve(outputPath)
   if (sourcePath) await assertNotSourceAlias(target, sourcePath)
 
   const info = await stat(target).catch(() => null)
   if (info) {
-    if (info.isDirectory()) {
-      throw invalidInput(`outputPath is a directory, not a file: ${target}`, {
-        hint: 'Pass a file path such as "./transcript.txt".',
-      })
-    }
-    if (!overwrite) {
-      throw invalidInput(`Refusing to overwrite an existing file: ${target}`, {
-        hint: 'Pass overwrite: true to replace it, or choose a different output path.',
-        details: { outputPath: target },
-      })
-    }
+    if (info.isDirectory()) throw directoryTargetError(target)
+    if (!overwrite) throw existingTargetError(target)
   }
 
+  await ensureDir(path.dirname(target))
   return target
+}
+
+/**
+ * Write the transcript without clobbering a file the caller did not approve.
+ *
+ * The `wx` flag makes the no-overwrite promise atomic: a target that appears
+ * after validation fails the write instead of being silently replaced.
+ */
+async function writeTranscript(target: string, text: string, overwrite: boolean): Promise<void> {
+  try {
+    await writeFile(target, text, { encoding: 'utf8', flag: overwrite ? 'w' : 'wx' })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') throw existingTargetError(target, error)
+    if (code === 'EISDIR') throw directoryTargetError(target, error)
+    throw error
+  }
 }
 
 export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = {
@@ -164,7 +198,7 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
 
       const artifacts = []
       if (target && !noSpeech) {
-        await writeFile(target, `${text}\n`, 'utf8')
+        await writeTranscript(target, `${text}\n`, input.overwrite ?? false)
         artifacts.push({
           path: target,
           kind: 'transcript' as const,

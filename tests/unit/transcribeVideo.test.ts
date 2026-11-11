@@ -200,6 +200,53 @@ describe('transcribe_video output target', () => {
     expect(await stat(source).then((info) => info.isFile())).toBe(true)
   })
 
+  it('creates missing parent directories for the transcript', async () => {
+    const target = path.join(dir, 'nested', 'deeper', 'transcript.txt')
+    const { service } = createFakeGemini()
+
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target },
+      createContext(service),
+    )
+
+    expect(await readFile(target, 'utf8')).toBe(`${TRANSCRIPT}\n`)
+    expect(result.artifacts?.[0]?.path).toBe(path.resolve(target))
+  })
+
+  it('accepts a file:// URI as the output target', async () => {
+    const target = path.join(dir, 'from-uri.txt')
+    const { service } = createFakeGemini()
+
+    await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: pathToFileURL(target).href },
+      createContext(service),
+    )
+
+    expect(await readFile(target, 'utf8')).toBe(`${TRANSCRIPT}\n`)
+  })
+
+  it('refuses an alias reached through a symlinked directory', async (context) => {
+    const linkDir = path.join(dir, 'dir-link')
+    try {
+      // A junction is a directory link that needs no elevation on Windows and is
+      // ignored on POSIX, so the alias check is covered where it matters most.
+      await symlink(dir, linkDir, 'junction')
+    } catch {
+      context.skip() // Directory links are unavailable on this platform.
+      return
+    }
+
+    const { service } = createFakeGemini()
+    await expect(
+      transcribeVideoOperation.run(
+        { videoPath: source, outputPath: path.join(linkDir, 'sample.mp4') },
+        createContext(service),
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    expect(await readFile(source, 'utf8')).toBe(SOURCE_BYTES)
+  })
+
   it('rejects an output target that is a directory', async () => {
     const { service } = createFakeGemini()
 

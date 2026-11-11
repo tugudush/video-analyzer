@@ -87,7 +87,8 @@ response usually means the prompt was blocked by safety filters.
 
 ## INVALID_INPUT
 
-The JSON did not match the schema. Run:
+The JSON did not match the schema, or `transcribe_video` rejected its output
+target. Run:
 
 ```bash
 node ./scripts/invoke.mjs help <operation>
@@ -95,6 +96,15 @@ node ./scripts/invoke.mjs help <operation>
 
 to print the JSON Schema. Common causes: passing numbers as strings or using
 `timestamps` without `mode: "timestamps"`.
+
+`transcribe_video` refusals, all reported before any upload or generation:
+
+| Message                                            | Fix                                                              |
+| -------------------------------------------------- | ---------------------------------------------------------------- |
+| Refusing to overwrite an existing file             | Pass `"overwrite": true`, or choose another `outputPath`         |
+| outputPath must not refer to the source media file | Point `outputPath` at a new file, for example `./transcript.txt` |
+| outputPath is a directory, not a file              | Pass a file path, not a folder                                   |
+| Subtitle output (.srt) is not supported            | Write a plain `.txt` transcript instead                          |
 
 ## MEDIA_PROCESSING_FAILED
 

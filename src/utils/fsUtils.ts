@@ -50,11 +50,6 @@ export async function ensureDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true })
 }
 
-/** Windows filesystems are case-insensitive, so fold case there. */
-function foldForCompare(value: string): string {
-  return process.platform === 'win32' ? value.toLowerCase() : value
-}
-
 async function statOrNull(target: string) {
   try {
     return await stat(target)
@@ -93,14 +88,16 @@ export async function canonicalPath(target: string): Promise<string> {
  * Whether two paths refer to the same file.
  *
  * Canonical paths catch relative segments, symlinks, and case/spelling
- * differences; the device/inode pair catches hard links when both exist.
+ * differences (`realpath` returns the on-disk form, which also settles casing
+ * on case-insensitive volumes); the device/inode pair catches hard links when
+ * both exist.
  */
 export async function isSameFile(first: string, second: string): Promise<boolean> {
   const [canonicalFirst, canonicalSecond] = await Promise.all([
     canonicalPath(first),
     canonicalPath(second),
   ])
-  if (foldForCompare(canonicalFirst) === foldForCompare(canonicalSecond)) return true
+  if (canonicalFirst === canonicalSecond) return true
 
   const [infoFirst, infoSecond] = await Promise.all([statOrNull(first), statOrNull(second)])
   if (!infoFirst || !infoSecond) return false
