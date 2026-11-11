@@ -21,6 +21,10 @@ Enforce the same destination policy for all downloader requests, including extra
 
 Tracking issue: [#4](https://github.com/tugudush/video-analyzer/issues/4)
 
+**Status:** Resolved. [`transcribe_video`](../../src/operations/transcribeVideo.ts#L131) validates the output target before any upload or generation: [`isSameFile`](../../src/utils/fsUtils.ts#L98) compares canonical paths (relative segments, symlinks, platform spelling) and device/inode pairs (hard links), so an `outputPath` that resolves to the source media is rejected with `INVALID_INPUT`. Existing files are only replaced when the new `overwrite: true` input is set, and a directory target is rejected. Regression coverage in `tests/unit/transcribeVideo.test.ts` asserts the source bytes are unchanged.
+
+The original finding is kept below for reference.
+
 [`transcribe_video`](../../src/operations/transcribeVideo.ts#L100) writes the transcript directly to the supplied `outputPath` without checking whether it refers to the source file. For example, using the same `.mp4` path for `videoPath` and `outputPath` truncates the original video after Gemini returns a transcript.
 
 Reject source/output aliases before starting the upload, including resolved paths and filesystem aliases where applicable, and use an explicit overwrite policy for existing files. Add a regression test that verifies the original bytes remain unchanged.
