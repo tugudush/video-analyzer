@@ -191,7 +191,7 @@ export interface GeminiServiceOptions {
   cacheSize?: number
   /** Injectable clock for tests. */
   now?: () => number
-  sleep?: (ms: number) => Promise<void>
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
 }
 
 export interface EnsureUploadedParams {
@@ -250,7 +250,7 @@ export class GeminiMediaService {
   private readonly logger: Logger
   private readonly cacheSize: number
   private readonly now: () => number
-  private readonly sleep: (ms: number) => Promise<void>
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>
   private readonly cache = new Map<string, CachedUpload>()
   private readonly inFlight = new Map<string, InFlightUpload>()
 
@@ -261,7 +261,23 @@ export class GeminiMediaService {
     this.cacheSize = options.cacheSize ?? 32
     this.now = options.now ?? (() => Date.now())
     this.sleep =
-      options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
+      options.sleep ??
+      ((ms, signal) =>
+        new Promise((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(operationCancelled())
+            return
+          }
+          const onAbort = () => {
+            clearTimeout(timer)
+            reject(operationCancelled())
+          }
+          const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort)
+            resolve()
+          }, ms)
+          signal?.addEventListener('abort', onAbort, { once: true })
+        }))
   }
 
   get model(): string {
@@ -425,7 +441,7 @@ export class GeminiMediaService {
       // Wake up at the poll interval or at the deadline, whichever comes first,
       // and stop waiting the moment the caller cancels.
       await this.waitUnlessCancelled(
-        () => this.sleep(Math.min(this.config.pollIntervalMs, remaining)),
+        (signal) => this.sleep(Math.min(this.config.pollIntervalMs, remaining), signal),
         params.signal,
       )
 
@@ -558,15 +574,20 @@ export class GeminiMediaService {
    * upload) while still honouring the caller's cancellation.
    */
   private async waitUnlessCancelled<T>(
-    work: () => Promise<T>,
+    work: (signal: AbortSignal) => Promise<T>,
     signal: AbortSignal | undefined,
   ): Promise<T> {
-    return runWithBounds(work, {
-      timeoutMs: 0,
-      ...(signal ? { signal } : {}),
-      onTimeout: () => requestTimeout('poll', 0),
-      onCancel: operationCancelled,
-    })
+    try {
+      return await runWithBounds(work, {
+        timeoutMs: 0,
+        ...(signal ? { signal } : {}),
+        onTimeout: () => requestTimeout('poll', 0),
+        onCancel: operationCancelled,
+      })
+    } catch (error) {
+      if (signal?.aborted && isAbortError(error)) throw operationCancelled({ cause: error })
+      throw error
+    }
   }
 
   private processingTimeout(fileName: string): VideoAnalyzerError {

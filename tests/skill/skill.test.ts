@@ -151,6 +151,45 @@ describe('video-analyzer Skill package', () => {
     expect(payload.error.code).toBe('INVALID_INPUT')
   })
 
+  it('preserves UTF-8 characters split across stdout and stderr chunks', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'video-analyzer-utf8-'))
+    const cli = path.join(root, 'fake-cli.mjs')
+    try {
+      await writeFile(
+        cli,
+        [
+          'process.stdout.write(Buffer.from(\'{"ok":false,"message":"Caf\'))',
+          "process.stderr.write(Buffer.from('Caf'))",
+          'process.stdout.write(Buffer.from([0xc3]))',
+          'process.stderr.write(Buffer.from([0xc3]))',
+          'setTimeout(() => {',
+          '  process.stdout.write(Buffer.from([0xa9, 0x22, 0x7d, 0x0a]))',
+          '  process.stderr.write(Buffer.from([0xa9, 0x0a]))',
+          '  process.exitCode = 1',
+          '}, 100)',
+        ].join('\n'),
+      )
+      let failure: { stdout?: string; stderr?: string } = {}
+      try {
+        await execFileAsync(
+          process.execPath,
+          [path.join(SKILL_DIR, 'scripts', 'invoke.mjs'), 'list'],
+          {
+            timeout: 30_000,
+            windowsHide: true,
+            env: { ...process.env, VIDEO_ANALYZER_CLI_PATH: cli },
+          },
+        )
+      } catch (error) {
+        failure = error as { stdout?: string; stderr?: string }
+      }
+      expect(JSON.parse(failure.stdout ?? '{}')).toEqual({ ok: false, message: 'Café' })
+      expect(failure.stderr).toBe('Café\n')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   /**
    * The user-level install resolves to the npm bin shim, a batch file that has
    * to run through `cmd.exe`. `cmd.exe` re-parses the whole `/c` string, so a

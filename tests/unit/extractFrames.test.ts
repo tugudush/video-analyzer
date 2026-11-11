@@ -10,6 +10,7 @@ import {
   MIN_INTERVAL_SEC,
   extractFramesAtInterval,
   extractFramesEvenly,
+  extractSceneFrames,
   resolveFrameBudget,
 } from '../../src/services/ffmpeg.js'
 import { artifactDirOf } from '../helpers/results.js'
@@ -96,9 +97,13 @@ function installFakes({
       // Scene mode: a null-output pass reports timestamps on stderr, then each
       // requested timestamp is extracted into its own file.
       if (args.includes('null')) {
+        const sceneLimit = lastFrameLimit === undefined ? sceneTimes.length : Number(lastFrameLimit)
         cb(null, {
           stdout: '',
-          stderr: sceneTimes.map((time) => `pts_time:${time.toFixed(3)}`).join('\n'),
+          stderr: sceneTimes
+            .slice(0, sceneLimit)
+            .map((time) => `pts_time:${time}`)
+            .join('\n'),
         })
         return
       }
@@ -363,6 +368,12 @@ describe('extract_frames frame budgets', () => {
 
     expect(result.data).toMatchObject({ mode: 'scene', totalFrames: 2, truncated: true })
     expect(result.warnings?.join(' ')).toContain('2-frame safety ceiling')
+    const detection = mocks.execFile.mock.calls.find((call) =>
+      (call[1] as string[]).includes('null'),
+    )
+    const args = detection?.[1] as string[]
+    expect(args[args.indexOf('-frames:v') + 1]).toBe('3')
+    expect(args[args.indexOf('-vf') + 1]).toContain('trim=end_frame=3')
   })
 
   it('does not mark a complete scene result truncated', async () => {
@@ -378,6 +389,62 @@ describe('extract_frames frame budgets', () => {
 
     expect(result.data).toMatchObject({ mode: 'scene', totalFrames: 2, truncated: false })
     expect(result.warnings ?? []).toHaveLength(0)
+  })
+
+  it('distinguishes closely spaced scene timestamps when applying the budget', async () => {
+    installFakes({ durationSeconds: 1, sceneTimes: [0.1001, 0.1002] })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '1' })
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'scene', outputDir: path.join(dir, 'frames') },
+      config,
+    )
+    expect(result.data).toMatchObject({ totalFrames: 1, truncated: true, timestamps: [0.1001] })
+  })
+
+  it('reports truncation even if the extra scene has a duplicate timestamp', async () => {
+    installFakes({ durationSeconds: 1, sceneTimes: [0.1, 0.1, 0.2] })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '1' })
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'scene', outputDir: path.join(dir, 'frames') },
+      config,
+    )
+    expect(result.data).toMatchObject({ totalFrames: 1, truncated: true, timestamps: [0.1] })
+  })
+
+  it('uses the legacy sync option only when ffmpeg lacks fps_mode', async () => {
+    installFakes({ durationSeconds: 1 })
+    mocks.execFile.mockImplementationOnce((_file, _args, _options, cb: Callback) => {
+      cb(
+        Object.assign(new Error('unsupported option'), {
+          stderr: "Unrecognized option 'fps_mode'.",
+        }),
+      )
+    })
+    const result = await extractSceneFrames(source, 0.1, loadConfig({}), {
+      outDir: dir,
+      maxFrames: 1,
+    })
+    expect(result).toEqual({ paths: [], timestamps: [], truncated: false })
+    expect(mocks.execFile).toHaveBeenCalledTimes(2)
+    const retryArgs = mocks.execFile.mock.calls[1]?.[1] as string[]
+    expect(retryArgs.slice(retryArgs.indexOf('-vsync'), retryArgs.indexOf('-vsync') + 2)).toEqual([
+      '-vsync',
+      '0',
+    ])
+    expect(retryArgs[retryArgs.indexOf('-frames:v') + 1]).toBe('2')
+  })
+
+  it('does not retry unrelated scene detection failures', async () => {
+    installFakes({ durationSeconds: 1 })
+    mocks.execFile.mockImplementationOnce((_file, _args, _options, cb: Callback) => {
+      cb(Object.assign(new Error('decoder failed'), { stderr: 'Invalid data found.' }))
+    })
+    await expect(
+      extractSceneFrames(source, 0.1, loadConfig({}), { outDir: dir, maxFrames: 1 }),
+    ).rejects.toMatchObject({ code: 'MEDIA_PROCESSING_FAILED' })
+    expect(mocks.execFile).toHaveBeenCalledTimes(1)
   })
 
   it('rejects a sub-minimum intervalSec before producing any frame', async () => {

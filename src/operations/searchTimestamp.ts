@@ -136,7 +136,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
           data: {
             query: input.query,
             matches: [],
-            found: true,
+            found: null,
             durationSeconds,
             raw: response.trim(),
           },

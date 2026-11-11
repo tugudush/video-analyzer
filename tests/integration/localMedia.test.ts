@@ -553,6 +553,62 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     }
   })
 
+  it('distinguishes a complete scene set from one exceeding its budget', async () => {
+    const source = path.join(workDir, 'scene-budget.mp4')
+    await execFileAsync(
+      FFMPEG,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=black:size=64x64:rate=2:duration=1',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=white:size=64x64:rate=2:duration=1',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=black:size=64x64:rate=2:duration=1',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=white:size=64x64:rate=2:duration=1',
+        '-filter_complex',
+        '[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0[v]',
+        '-map',
+        '[v]',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        source,
+      ],
+      { timeout: 60_000, windowsHide: true },
+    )
+    for (const [budget, truncated] of [
+      [2, true],
+      [3, false],
+    ] as const) {
+      const result = await executeOperation(
+        extractFramesOperation,
+        { videoPath: source, mode: 'scene', sceneThreshold: 0.1 },
+        loadConfig({
+          VIDEO_ANALYZER_OUTPUT_DIR: workDir,
+          VIDEO_ANALYZER_MAX_FRAMES: String(budget),
+        }),
+      )
+      expect(result.data).toMatchObject({
+        totalFrames: budget,
+        truncated,
+        timestamps: [1, 2, 3].slice(0, budget),
+      })
+    }
+  })
+
   it('uses the configured logger and progress hook', async () => {
     const sample = await createSampleVideo(workDir)
     const messages: string[] = []

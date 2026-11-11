@@ -138,6 +138,20 @@ describe('search_timestamp result shape', () => {
     })
   })
 
+  it.each([
+    'I could not find a red car in the video.',
+    'A red car may appear briefly, but I cannot determine when.',
+  ])('reports an unparseable reply as unknown: %s', async (reply) => {
+    const result = await searchTimestampOperation.run(
+      { videoPath: source, query: 'a red car' },
+      createContext(createService(reply)),
+    )
+
+    expect(result.summary).toBe(reply)
+    expect(result.data).toMatchObject({ found: null, matches: [], raw: reply })
+    expect(result.warnings?.join(' ')).toContain('did not use the MATCH format')
+  })
+
   it('warns when a reported timestamp is past the end of the clip', async () => {
     const result = await searchTimestampOperation.run(
       { videoPath: source, query: 'a red car' },

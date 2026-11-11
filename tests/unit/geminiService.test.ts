@@ -422,6 +422,67 @@ describe('GeminiMediaService timeouts and cancellation', () => {
     expect(api.getFile).not.toHaveBeenCalled()
   })
 
+  it('clears the poll timer when the last shared-upload waiter cancels', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi({ states: ['PROCESSING'] })
+    const service = new GeminiMediaService({
+      config: loadConfig({ VIDEO_ANALYZER_POLL_INTERVAL_MS: '10000' }),
+      logger: createLogger('silent'),
+      api,
+    })
+    const first = new AbortController()
+    const second = new AbortController()
+    const leader = service.ensureUploaded({ ...uploadParams, signal: first.signal })
+    const follower = service.ensureUploaded({ ...uploadParams, signal: second.signal })
+    const leaderResult = expect(leader).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    const followerResult = expect(follower).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(1)
+    first.abort()
+    await leaderResult
+    expect(vi.getTimerCount()).toBe(1)
+    second.abort()
+    await followerResult
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(api.getFile).not.toHaveBeenCalled()
+  })
+
+  it('clears the poll timer for a cancelled non-shared local upload', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi({ states: ['PROCESSING'] })
+    const service = new GeminiMediaService({
+      config: loadConfig({}),
+      logger: createLogger('silent'),
+      api,
+    })
+    const controller = new AbortController()
+    const { cacheKey: _cacheKey, ...localUpload } = uploadParams
+    const pending = service.ensureUploaded({ ...localUpload, signal: controller.signal })
+    const result = expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(1)
+    controller.abort()
+    await result
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('polls normally after the default delay completes', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi({ states: ['PROCESSING', 'ACTIVE'] })
+    const service = new GeminiMediaService({
+      config: loadConfig({ VIDEO_ANALYZER_POLL_INTERVAL_MS: '1000' }),
+      logger: createLogger('silent'),
+      api,
+    })
+    const pending = service.ensureUploaded(uploadParams)
+    await vi.advanceTimersByTimeAsync(1000)
+    await expect(pending).resolves.toMatchObject({ state: 'ACTIVE' })
+    expect(api.getFile).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('bounds a stalled status request with the request timeout', async () => {
     vi.useFakeTimers()
     const api = createFakeApi({ states: ['PROCESSING'] })

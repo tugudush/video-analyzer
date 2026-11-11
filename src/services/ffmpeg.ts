@@ -545,43 +545,56 @@ export async function extractSceneFrames(
   config: Config,
   options: FrameExtractionOptions & { maxFrames: number },
 ): Promise<{ paths: string[]; timestamps: number[]; truncated: boolean }> {
-  const { stderr } = await run(
-    config.ffmpegPath,
-    [
-      '-hide_banner',
-      '-loglevel',
-      'info',
-      '-nostats',
-      '-i',
-      filePath,
-      '-map',
-      '0:v:0',
-      '-an',
-      '-vf',
-      `select='gt(scene,${threshold})',showinfo`,
-      '-f',
-      'null',
-      '-',
-    ],
-    FFMPEG_TIMEOUT_MS,
-    options.signal,
-  )
+  // One extra detection distinguishes an exact fit from a truncated result.
+  const detectionLimit = options.maxFrames > 0 ? options.maxFrames + 1 : undefined
+  const detectionArgs = [
+    '-hide_banner',
+    '-loglevel',
+    'info',
+    '-nostats',
+    '-i',
+    filePath,
+    '-map',
+    '0:v:0',
+    '-an',
+    '-vf',
+    `select='gt(scene,${threshold})'${detectionLimit ? `,trim=end_frame=${detectionLimit}` : ''},showinfo`,
+    ...(detectionLimit ? ['-frames:v', String(detectionLimit)] : []),
+  ]
+  const detect = (syncArgs: string[]) =>
+    run(
+      config.ffmpegPath,
+      [...detectionArgs, ...syncArgs, '-f', 'null', '-'],
+      FFMPEG_TIMEOUT_MS,
+      options.signal,
+    )
+  let detection: { stdout: string; stderr: string }
+  try {
+    detection = await detect(['-fps_mode', 'passthrough'])
+  } catch (error) {
+    if (
+      !(error instanceof VideoAnalyzerError) ||
+      error.code !== 'MEDIA_PROCESSING_FAILED' ||
+      !error.hint?.includes("Unrecognized option 'fps_mode'")
+    ) {
+      throw error
+    }
+    // FFmpeg before 5 uses the equivalent option that newer releases removed.
+    detection = await detect(['-vsync', '0'])
+  }
 
-  const detected = [...stderr.matchAll(/pts_time:([0-9.]+)/g)]
+  const detected = [...detection.stderr.matchAll(/pts_time:([0-9.]+)/g)]
     .map((match) => Number(match[1]))
     .filter((value) => Number.isFinite(value) && value >= 0)
 
-  const unique = [...new Set(detected.map((value) => Number(value.toFixed(3))))].toSorted(
-    (a, b) => a - b,
-  )
+  const unique = [...new Set(detected)].toSorted((a, b) => a - b)
 
   const limit = options.maxFrames > 0 ? Math.min(unique.length, options.maxFrames) : unique.length
   const timestamps = unique.slice(0, limit)
 
-  if (timestamps.length === 0) {
-    return { paths: [], timestamps: [], truncated: unique.length > 0 }
-  }
+  const truncated = options.maxFrames > 0 && detected.length > options.maxFrames
+  if (timestamps.length === 0) return { paths: [], timestamps: [], truncated }
 
   const paths = await extractFramesAtTimestamps(filePath, timestamps, config, options)
-  return { paths, timestamps, truncated: unique.length > limit }
+  return { paths, timestamps, truncated }
 }
