@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+test-videos/
 # Generated artifacts from extract_frames, relative to the working directory.
 video-analyzer-output/
 *.log
