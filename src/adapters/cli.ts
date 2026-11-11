@@ -57,7 +57,8 @@ Output:
 Environment:
   GEMINI_API_KEY                     Required for Gemini-backed operations
   GEMINI_MODEL                       Override the default Gemini model
-  VIDEO_ANALYZER_MAX_FRAMES          AI frame ceiling (0 = uncapped, default 100)
+  VIDEO_ANALYZER_MAX_FRAMES          Frame budget for sampling/extraction (default 100,
+                                     0 = only the 500-frame hard cap)
   VIDEO_ANALYZER_DOWNLOAD_MAX_MB     Remote download size limit
   VIDEO_ANALYZER_REQUEST_TIMEOUT_MS  AI request timeout
   VIDEO_ANALYZER_OUTPUT_DIR          Base directory for generated artifacts

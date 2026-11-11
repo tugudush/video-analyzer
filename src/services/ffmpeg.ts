@@ -155,6 +155,35 @@ export interface FrameExtractionOptions {
   signal?: AbortSignal
 }
 
+/**
+ * Smallest accepted spacing for interval extraction.
+ *
+ * Below one frame per 100 ms the interval is almost always a typo, and the
+ * resulting frame count grows without bound on a long input.
+ */
+export const MIN_INTERVAL_SEC = 0.1
+
+/**
+ * Hard ceiling on the frames one extraction may write, whatever
+ * `VIDEO_ANALYZER_MAX_FRAMES` says.
+ *
+ * `0` in that setting means "no configured ceiling", not "no ceiling": an
+ * uncapped interval on a long video would otherwise fill the output directory
+ * before anyone could page through the results.
+ */
+export const MAX_FRAMES_PER_EXTRACTION = 500
+
+/**
+ * Resolve the effective frame budget for one extraction.
+ *
+ * A configured ceiling of `0` (or an unusable value) falls back to the hard
+ * ceiling, and a larger configured ceiling is clamped to it.
+ */
+export function resolveFrameBudget(configured: number): number {
+  if (!Number.isFinite(configured) || configured <= 0) return MAX_FRAMES_PER_EXTRACTION
+  return Math.min(Math.floor(configured), MAX_FRAMES_PER_EXTRACTION)
+}
+
 function frameArgs(options: FrameExtractionOptions): string[] {
   const width = options.maxWidth ?? 1280
   return ['-vf', `scale=${width}:-2`, '-q:v', '3']
@@ -209,14 +238,40 @@ export async function extractFramesEvenly(
   return listFrames(options.outDir)
 }
 
-/** Extract one frame every `intervalSec` seconds. */
+export interface IntervalExtractionResult {
+  /** Frames written to disk, in filename order. */
+  paths: string[]
+  /** Frames the interval would produce across the whole media, before the budget. */
+  expectedFrames: number
+  /** Frame budget that was enforced while ffmpeg was writing. */
+  frameBudget: number
+  /** True when the budget stopped extraction before the end of the media. */
+  truncated: boolean
+}
+
+/**
+ * Extract one frame every `intervalSec` seconds.
+ *
+ * The frame budget is enforced *during* production (`-frames:v`), not just when
+ * the response is assembled: a small interval on a long video used to write one
+ * JPEG per interval regardless of `maxImages` or the configured frame limit.
+ */
 export async function extractFramesAtInterval(
   filePath: string,
   intervalSec: number,
   config: Config,
-  options: FrameExtractionOptions,
-): Promise<string[]> {
-  if (intervalSec <= 0) throw invalidInput('intervalSec must be greater than 0.')
+  options: FrameExtractionOptions & { maxFrames: number },
+): Promise<IntervalExtractionResult> {
+  if (!Number.isFinite(intervalSec) || intervalSec < MIN_INTERVAL_SEC) {
+    throw invalidInput(`intervalSec must be at least ${MIN_INTERVAL_SEC} seconds.`, {
+      hint: `Received ${JSON.stringify(intervalSec)}. Use a larger interval or mode "even".`,
+    })
+  }
+
+  const metadata = await getMediaMetadata(filePath, config, options.signal)
+  const duration = metadata.durationSeconds
+  const expectedFrames = duration > 0 ? Math.max(1, Math.ceil(duration / intervalSec)) : 0
+  const frameBudget = resolveFrameBudget(options.maxFrames)
 
   const pattern = path.join(options.outDir, 'frame-%04d.jpg')
   await run(
@@ -230,6 +285,9 @@ export async function extractFramesAtInterval(
       filePath,
       '-vf',
       `fps=1/${intervalSec},scale=${options.maxWidth ?? 1280}:-2`,
+      // Stop the encoder at the budget so a long input cannot fill the disk.
+      '-frames:v',
+      String(frameBudget),
       '-q:v',
       '3',
       pattern,
@@ -238,7 +296,14 @@ export async function extractFramesAtInterval(
     options.signal,
   )
 
-  return listFrames(options.outDir)
+  const paths = await listFrames(options.outDir)
+
+  return {
+    paths,
+    expectedFrames,
+    frameBudget,
+    truncated: expectedFrames > frameBudget,
+  }
 }
 
 /** Extract the single frame closest to each requested timestamp. */

@@ -87,8 +87,8 @@ response usually means the prompt was blocked by safety filters.
 
 ## INVALID_INPUT
 
-The JSON did not match the schema, or `transcribe_video` rejected its output
-target. Run:
+The JSON did not match the schema (including an `intervalSec` below the 0.1
+second floor), or `transcribe_video` rejected its output target. Run:
 
 ```bash
 node ./scripts/invoke.mjs help <operation>
@@ -127,3 +127,7 @@ export VIDEO_ANALYZER_CLI_PATH=/path/to/video-analyzer/dist/cli.js
   `extract_frames` at nearby times before trusting a cut.
 - **Transcript is rough:** Gemini transcription is plain text with no diarization.
   Use a dedicated speech-to-text service if that is required.
+- **Fewer interval frames than expected:** `mode: "interval"` stops at the frame
+  budget (`VIDEO_ANALYZER_MAX_FRAMES`, hard ceiling 500) and reports
+  `data.truncated: true` with a warning. Raise the budget, increase `intervalSec`,
+  or use `mode: "even"` to spread a fixed count across the clip.

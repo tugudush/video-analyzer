@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -104,6 +104,27 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     expect(first.images).toHaveLength(2)
     expect(first.data).toMatchObject({ offset: 0, hasMore: true })
     expect(first.warnings?.join(' ')).toContain('offset=2')
+  })
+
+  it('stops interval extraction at a small configured frame budget', async () => {
+    const sample = await createSampleVideo(workDir)
+    const outputDir = path.join(workDir, 'frames-interval-budget')
+    const budgetedConfig = loadConfig({
+      VIDEO_ANALYZER_OUTPUT_DIR: workDir,
+      VIDEO_ANALYZER_MAX_FRAMES: '2',
+    })
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample.path, mode: 'interval', intervalSec: 0.5, outputDir },
+      budgetedConfig,
+    )
+
+    // A 4s clip at one frame per half second would produce eight frames.
+    expect(await readdir(outputDir)).toHaveLength(2)
+    expect(result.images).toHaveLength(2)
+    expect(result.data).toMatchObject({ mode: 'interval', totalFrames: 2, truncated: true })
+    expect(result.warnings?.join(' ')).toContain('2-frame budget')
   })
 
   it('detects scene changes', async () => {

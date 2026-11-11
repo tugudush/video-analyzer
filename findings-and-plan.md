@@ -218,18 +218,18 @@ Use a small Gemini file-reference cache, not the reference project's full artifa
 
 Keep only relevant environment variables:
 
-| Variable                            | Purpose                                                                       |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `GEMINI_API_KEY`                    | Required only for Gemini-backed operations.                                   |
-| `GEMINI_MODEL`                      | Optional model override; validated and resolved in one module.                |
-| `VIDEO_ANALYZER_MAX_FRAMES`         | Optional frame-sampling limit; default 100, `0` means no fixed frame ceiling. |
-| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | Safety limit for remote downloads.                                            |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | AI request timeout.                                                           |
-| `YT_DLP_PATH`                       | Optional yt-dlp executable override.                                          |
-| `YT_DLP_MAX_RESOLUTION`             | Optional user-selected resolution limit, with no license enforcement.         |
-| `YT_DLP_COOKIES_FILE`               | Optional cookies file for authorized/private sources.                         |
-| `YT_DLP_IMPERSONATE`                | Optional yt-dlp impersonation setting.                                        |
-| `VIDEO_ANALYZER_CLI_PATH`           | Optional explicit core CLI path used by the Skill launcher.                   |
+| Variable                            | Purpose                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GEMINI_API_KEY`                    | Required only for Gemini-backed operations.                                                                                                            |
+| `GEMINI_MODEL`                      | Optional model override; validated and resolved in one module.                                                                                         |
+| `VIDEO_ANALYZER_MAX_FRAMES`         | Optional frame-sampling limit; default 100. `0` removes the configured ceiling, but a 500-frame hard cap per extraction still bounds `extract_frames`. |
+| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | Safety limit for remote downloads.                                                                                                                     |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | AI request timeout.                                                                                                                                    |
+| `YT_DLP_PATH`                       | Optional yt-dlp executable override.                                                                                                                   |
+| `YT_DLP_MAX_RESOLUTION`             | Optional user-selected resolution limit, with no license enforcement.                                                                                  |
+| `YT_DLP_COOKIES_FILE`               | Optional cookies file for authorized/private sources.                                                                                                  |
+| `YT_DLP_IMPERSONATE`                | Optional yt-dlp impersonation setting.                                                                                                                 |
+| `VIDEO_ANALYZER_CLI_PATH`           | Optional explicit core CLI path used by the Skill launcher.                                                                                            |
 
 MCP environment configuration and Skill/CLI process environment use the same variable names and parsing module. Local-only operations should still run when `GEMINI_API_KEY` is absent. Gemini-backed calls should return an actionable configuration error rather than attempting another provider.
 

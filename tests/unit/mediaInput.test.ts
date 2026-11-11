@@ -24,6 +24,7 @@ describe('remote media input policy', () => {
     YT_DLP_PATH: '/configured/downloader',
     VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS: 'true',
   })
+  const smallLimitConfig = loadConfig({ VIDEO_ANALYZER_DOWNLOAD_MAX_MB: '1' })
   const fetchMock = vi.fn()
 
   beforeEach(() => {
@@ -167,5 +168,36 @@ describe('remote media input policy', () => {
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects a download whose declared length exceeds the configured limit', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('media', {
+        headers: { 'content-type': 'video/mp4', 'content-length': String(2 * 1024 * 1024) },
+      }),
+    )
+
+    await expect(
+      resolveMediaInput('https://example.com/media.mp4', smallLimitConfig),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/exceeds the download size limit/),
+    })
+  })
+
+  it('stops a download that outgrows the limit while streaming', async () => {
+    // No Content-Length header, so only the streaming guard can catch this.
+    fetchMock.mockResolvedValue(
+      new Response(new Uint8Array(2 * 1024 * 1024), {
+        headers: { 'content-type': 'video/mp4' },
+      }),
+    )
+
+    await expect(
+      resolveMediaInput('https://example.com/media.mp4', smallLimitConfig),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/exceeded the download size limit while streaming/),
+    })
   })
 })
