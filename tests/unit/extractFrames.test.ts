@@ -637,7 +637,11 @@ describe('extract_frames timestamps mode', () => {
       totalFrames: 2,
       timestamps: [0.5, 1.5],
     })
-    expect(result.images?.map((image) => image.label)).toEqual(['t=0.50s', 't=1.50s'])
+    expect(result.images?.map((image) => image.label)).toEqual([
+      'requested t=0.5s',
+      'requested t=1.5s',
+    ])
+    expect(result.warnings?.join(' ')).toContain('requested times')
   })
 
   it('reports a missing output file and removes the partial artifact folder', async () => {

@@ -189,9 +189,8 @@ export interface EnsureUploadedParams {
   sizeBytes: number
   mtimeMs: number
   /**
-   * Stable source identity. Supply it when `path` is not stable for the same
-   * bytes (a direct download writes into a new temp directory per call), so the
-   * cache can still recognise a repeat request.
+   * Stable content identity for an immutable source. Without one, the upload
+   * is neither cached nor coalesced with another request.
    */
   cacheKey?: string
   retainSource?: () => () => Promise<void>
@@ -258,18 +257,15 @@ export class GeminiMediaService {
     return this.config.geminiModel
   }
 
-  private cacheKey(params: EnsureUploadedParams): string {
-    return (
-      params.cacheKey ??
-      `${params.path}\u0000${params.sizeBytes}\u0000${Math.round(params.mtimeMs)}`
-    )
-  }
-
   /** Upload once per source file, coalescing concurrent callers. */
   async ensureUploaded(params: EnsureUploadedParams): Promise<GeminiFileHandle> {
-    const key = this.cacheKey(params)
     const signal = params.signal
     if (signal?.aborted) throw operationCancelled()
+
+    // A mutable local path and its metadata cannot identify its contents.
+    // Only callers with a stable content identity may reuse or share an upload.
+    const key = params.cacheKey
+    if (!key) return this.uploadAndWait(params)
 
     const cached = this.cache.get(key)
     if (cached && cached.expiresAtMs > this.now()) {
@@ -345,7 +341,7 @@ export class GeminiMediaService {
 
   private async uploadAndWait(
     params: EnsureUploadedParams,
-    key: string,
+    key?: string,
   ): Promise<GeminiFileHandle> {
     // The deadline covers the upload itself as well as the wait for ACTIVE, so a
     // stalled upload cannot outlive the configured processing budget.
@@ -384,14 +380,16 @@ export class GeminiMediaService {
       ? Date.parse(active.expirationTime)
       : this.now() + DEFAULT_CACHE_EXPIRY_MS
 
-    this.touch(key, {
-      handle: active,
-      sizeBytes: params.sizeBytes,
-      mtimeMs: params.mtimeMs,
-      expiresAtMs: Number.isFinite(expiresAtMs)
-        ? expiresAtMs
-        : this.now() + DEFAULT_CACHE_EXPIRY_MS,
-    })
+    if (key) {
+      this.touch(key, {
+        handle: active,
+        sizeBytes: params.sizeBytes,
+        mtimeMs: params.mtimeMs,
+        expiresAtMs: Number.isFinite(expiresAtMs)
+          ? expiresAtMs
+          : this.now() + DEFAULT_CACHE_EXPIRY_MS,
+      })
+    }
 
     return active
   }

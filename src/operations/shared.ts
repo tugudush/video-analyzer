@@ -63,6 +63,7 @@ export async function prepareMedia(
 ): Promise<PreparedMedia> {
   ctx.onProgress?.('Resolving media input…')
   const media = await resolveMediaInput(videoPath, ctx.config, {
+    logger: ctx.logger,
     ...(ctx.signal ? { signal: ctx.signal } : {}),
     ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
   })
@@ -91,8 +92,8 @@ export interface UploadIdentity {
 /**
  * Describe a resolved source for the Gemini upload cache.
  *
- * Local files are identified by path plus size and mtime. A downloaded copy is
- * identified by content, so only identical downloads reuse an upload.
+ * A downloaded copy is identified by content, so only identical downloads reuse
+ * an upload. Mutable local paths have no cache key and are uploaded each time.
  */
 export async function statForUpload(media: ResolvedMedia): Promise<UploadIdentity> {
   const info = await stat(media.path)

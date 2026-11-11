@@ -34,7 +34,7 @@ export const extractFramesInput = z.object({
     .enum(['even', 'interval', 'timestamps', 'scene'])
     .optional()
     .describe(
-      'even = N evenly spaced frames (default), interval = one frame every intervalSec, timestamps = the exact list supplied, scene = one frame per detected scene change.',
+      'even = N evenly spaced frames (default), interval = one frame every intervalSec, timestamps = frames at the requested times, scene = one frame per detected scene change.',
     ),
   count: z
     .number()
@@ -91,6 +91,8 @@ const DEFAULT_MAX_IMAGES = 20
 const FRAME_SET_FILE = '.video-analyzer-frames.json'
 const INTERVAL_TIMESTAMP_WARNING =
   'Interval timestamps are approximate sampling-grid times, not the presentation times of the selected source frames.'
+const REQUESTED_TIMESTAMP_WARNING =
+  'Timestamp labels are requested times, not the presentation times of the selected source frames. Extraction selects the first frame at or after the requested time, or the final frame if the seek reaches the end.'
 const frameSetSchema = z.object({
   version: z.literal(1),
   mode: z.enum(['even', 'interval', 'timestamps', 'scene']),
@@ -144,6 +146,9 @@ async function renderFramePage(
   if (mode === 'interval' && !warnings.includes(INTERVAL_TIMESTAMP_WARNING)) {
     warnings.push(INTERVAL_TIMESTAMP_WARNING)
   }
+  if (mode === 'timestamps' && !warnings.includes(REQUESTED_TIMESTAMP_WARNING)) {
+    warnings.push(REQUESTED_TIMESTAMP_WARNING)
+  }
   const page = files.slice(offset, offset + maxImages).map((file) => path.join(outDir, file))
   const pageTimestamps = timestamps.slice(offset, offset + maxImages)
   const hasMore = offset + page.length < files.length
@@ -170,7 +175,9 @@ async function renderFramePage(
     mimeType: 'image/jpeg',
     label:
       pageTimestamps[index] !== undefined
-        ? `t=${Number(pageTimestamps[index]).toFixed(2)}s`
+        ? mode === 'timestamps'
+          ? `requested t=${pageTimestamps[index]}s`
+          : `t=${Number(pageTimestamps[index]).toFixed(2)}s`
         : path.basename(framePath),
   }))
 
@@ -397,7 +404,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
     } catch (error) {
       // A failed extraction must not leave a half-populated folder behind, so the
       // caller can trust that reported output directories are complete.
-      await removeDir(outDir)
+      await removeDir(outDir, ctx.logger)
       throw error
     } finally {
       await prepared.media.cleanup()

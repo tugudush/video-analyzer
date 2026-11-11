@@ -418,7 +418,8 @@ export async function extractFramesAtInterval(
 }
 
 /**
- * Extract the single frame closest to each requested timestamp.
+ * Extract the first frame at or after each requested timestamp. If the seek
+ * reaches EOF, sample the final frame instead.
  *
  * Files are named `frame-NNNN.jpg` by position, so the caller must own an empty
  * directory: a reused one is overwritten in place, and no guard is applied here
@@ -437,26 +438,76 @@ export async function extractFramesAtTimestamps(
       throw invalidInput(`Timestamps must be non-negative numbers; received ${timestamp}.`)
     }
     const target = path.join(options.outDir, `frame-${String(index + 1).padStart(4, '0')}.jpg`)
-    await run(
-      config.ffmpegPath,
-      [
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-y',
-        '-ss',
-        timestamp.toFixed(3),
-        '-i',
-        filePath,
-        '-frames:v',
-        '1',
-        ...frameArgs(options),
-        target,
-      ],
-      FFMPEG_TIMEOUT_MS,
-      options.signal,
-    )
-    const info = await stat(target).catch(() => null)
+    let seekFailure: unknown
+    try {
+      await run(
+        config.ffmpegPath,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-ss',
+          timestamp.toFixed(9),
+          '-i',
+          filePath,
+          '-frames:v',
+          '1',
+          ...frameArgs(options),
+          target,
+        ],
+        FFMPEG_TIMEOUT_MS,
+        options.signal,
+      )
+    } catch (error) {
+      if (
+        !(error instanceof VideoAnalyzerError) ||
+        error.code !== 'MEDIA_PROCESSING_FAILED' ||
+        error.details?.['timeoutMs'] !== undefined
+      ) {
+        throw error
+      }
+      seekFailure = error
+    }
+
+    let info = await stat(target).catch(() => null)
+    if (!info || info.size === 0) {
+      try {
+        await run(
+          config.ffmpegPath,
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-y',
+            '-i',
+            filePath,
+            '-vf',
+            `tpad=stop_mode=clone:stop_duration=${(timestamp + 1).toFixed(9)},fps=1000:start_time=${timestamp.toFixed(9)}:round=near,${scaleFilter(options)}`,
+            '-frames:v',
+            '1',
+            '-q:v',
+            '3',
+            target,
+          ],
+          FFMPEG_TIMEOUT_MS,
+          options.signal,
+        )
+      } catch (error) {
+        if (
+          seekFailure &&
+          error instanceof VideoAnalyzerError &&
+          error.code === 'MEDIA_PROCESSING_FAILED' &&
+          error.details?.['timeoutMs'] === undefined
+        ) {
+          throw seekFailure
+        }
+        throw error
+      }
+      info = await stat(target).catch(() => null)
+    } else if (seekFailure) {
+      throw seekFailure
+    }
     if (!info || info.size === 0) {
       throw new VideoAnalyzerError(
         'MEDIA_PROCESSING_FAILED',

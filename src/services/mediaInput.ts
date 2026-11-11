@@ -6,6 +6,7 @@ import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { createTempDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
 import { downloadToFile, redactedUrl } from '../utils/net.js'
+import type { Logger } from '../utils/logger.js'
 
 export type MediaSource = 'local' | 'direct'
 
@@ -30,6 +31,7 @@ export interface ResolvedMedia {
 export interface ResolveOptions {
   signal?: AbortSignal
   onProgress?: (message: string) => void
+  logger?: Logger
 }
 
 export function isRemoteUrl(value: string): boolean {
@@ -116,7 +118,6 @@ async function resolveDirect(
 
     const mimeType = declared && isMediaMimeType(declared) ? declared : fromUrl
     if (!mimeType) {
-      await removeDir(tempDir)
       throw new VideoAnalyzerError(
         'UNSUPPORTED_INPUT',
         'Could not determine the media type of the downloaded file.',
@@ -130,7 +131,7 @@ async function resolveDirect(
     let references = 1
     const release = async () => {
       references -= 1
-      if (references === 0) await removeDir(tempDir)
+      if (references === 0) await removeDir(tempDir, opts.logger)
     }
     let cleaned = false
     return {
@@ -157,7 +158,7 @@ async function resolveDirect(
       },
     }
   } catch (error) {
-    await removeDir(tempDir)
+    await removeDir(tempDir, opts.logger)
     throw error
   }
 }

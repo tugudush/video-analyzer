@@ -42,6 +42,10 @@ async function toCallToolResult(
 
   for (const image of images) {
     content.push({
+      type: 'text',
+      text: `Frame: ${image.path}${image.label ? ` (${image.label})` : ''}`,
+    })
+    content.push({
       type: 'image',
       data: image.base64,
       mimeType: image.mimeType,

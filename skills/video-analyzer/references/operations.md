@@ -194,8 +194,8 @@ node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"inte
 node ./scripts/invoke.mjs extract_frames '{"frameSetDir":"./frames/frames-...","maxImages":10,"offset":10}'
 ```
 
-`images[]` lists every returned JPEG with an absolute `path` and a `t=` label
-where a timestamp is known. `data.hasMore` indicates another page exists.
+`images[]` lists every returned JPEG with an absolute `path` and a timestamp
+label where one is known. `data.hasMore` indicates another page exists.
 Paging with `frameSetDir` reads the saved frame set without accessing the source
 or rerunning ffmpeg. Supply only `frameSetDir`, `offset`, and `maxImages` for
 saved pages. Passing `videoPath` and an `offset` without `frameSetDir` remains a
@@ -203,12 +203,11 @@ new extraction, with the corresponding download, processing and disk costs.
 Frames retain their aspect ratio, with a 1280-pixel longest-edge limit and no
 upscaling.
 
-Over MCP the frames are returned as inline image content, capped at about 2 MB of
-base64 per result — roughly 10–15 frames of typical footage. The first frame is
-always inlined even when it exceeds that budget. Frames past the cap
-are not dropped: the result lists their paths in a text block instead, and the
-CLI envelope always carries paths only. Lower `maxImages` when every frame has to
-be inline.
+Over MCP the frames are returned as inline image content, capped at 2 MiB of
+base64 per result. Each inline image is preceded by its path and label. Frames
+that do not fit, including the first, are listed by path instead; the CLI
+envelope always carries paths only. Lower `maxImages` when every frame has to
+be inline, except that an individually oversized frame cannot be inlined.
 
 `interval` mode stops at the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`, default
 100, hard ceiling 500) while ffmpeg is writing, starting from `t=0`. When the
@@ -225,7 +224,11 @@ frame.
 `timestamps` mode validates the whole array against the media duration before the
 first ffmpeg call. A value at or beyond the end of the clip is rejected as
 `INVALID_INPUT` with the offending value and the duration in the message, instead
-of failing the run and stranding the frames the valid values produced. If an
+of failing the run and stranding the frames the valid values produced. For each
+valid time, extraction selects the first frame at or after it, or the final frame
+if the seek reaches the end. The labels and `data.timestamps` describe requested
+times, not the selected frames' presentation times; every page warns about this.
+The end-of-clip fallback may require decoding from the beginning. If an
 extraction fails for any other reason, the artifact folder created for the
 request is removed on a best-effort basis, so a reported `outputDir` contains a
 complete set.

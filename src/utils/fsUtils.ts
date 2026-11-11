@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createLogger, type Logger } from './logger.js'
 
 const TEMP_PREFIX = 'video-analyzer-'
 
@@ -16,10 +17,20 @@ export async function createTempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), TEMP_PREFIX))
 }
 
-/** Remove a directory tree, ignoring "already gone" failures. */
-export async function removeDir(dir: string | null | undefined): Promise<void> {
+/** Best-effort removal; report failures without masking the operation's error. */
+export async function removeDir(
+  dir: string | null | undefined,
+  logger: Logger = createLogger('warn'),
+): Promise<void> {
   if (!dir) return
-  await rm(dir, { recursive: true, force: true, maxRetries: 2 }).catch(() => undefined)
+  try {
+    await rm(dir, { recursive: true, force: true, maxRetries: 2 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    logger.warn(
+      `Could not remove temporary directory ${dir}: ${String(error)}. Delete it manually.`,
+    )
+  }
 }
 
 /**

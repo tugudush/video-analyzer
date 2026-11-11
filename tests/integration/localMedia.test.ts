@@ -110,6 +110,87 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     expect(data.timestamps).toEqual([0.5, 2])
   })
 
+  it('reports requested times and returns the last frame for a seek near the end', async () => {
+    const sample = path.join(workDir, 'low-fps.mp4')
+    await execFileAsync(
+      FFMPEG,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=2:size=64x64:rate=2',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        sample,
+      ],
+      { timeout: 60_000, windowsHide: true },
+    )
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample, mode: 'timestamps', timestamps: [0, 1e-7, 0.1, 0.5, 1.5, 1.9, 1.9999] },
+      config,
+    )
+    const images = result.images ?? []
+    expect(images).toHaveLength(7)
+    const bytes = await Promise.all(images.map((image) => readFile(image.path)))
+    expect(bytes[2]).toEqual(bytes[3])
+    expect(bytes[0]).not.toEqual(bytes[2])
+    expect(bytes[5]).toEqual(bytes[4])
+    expect(bytes[6]).toEqual(bytes[4])
+    expect(images[2]?.label).toBe('requested t=0.1s')
+    expect(images[6]?.label).toBe('requested t=1.9999s')
+    expect(result.warnings?.join(' ')).toContain('requested times')
+    const page = await executeOperation(
+      extractFramesOperation,
+      { frameSetDir: artifactDirOf(result.data), offset: 4 },
+      config,
+    )
+    expect(page.warnings?.join(' ')).toContain('requested times')
+  })
+
+  it('uses the last video frame when audio extends beyond the video stream', async () => {
+    const sample = path.join(workDir, 'long-audio.mp4')
+    await execFileAsync(
+      FFMPEG,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=duration=2:size=64x64:rate=2',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=5',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        sample,
+      ],
+      { timeout: 60_000, windowsHide: true },
+    )
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample, mode: 'timestamps', timestamps: [1.5, 4.9] },
+      config,
+    )
+    const images = result.images ?? []
+    expect(images).toHaveLength(2)
+    expect(await readFile(images[0]!.path)).toEqual(await readFile(images[1]!.path))
+  })
+
   it('paginates frames with offset and maxImages', async () => {
     const sample = await createSampleVideo(workDir)
     const outputDir = path.join(workDir, 'frames-page')

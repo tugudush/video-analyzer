@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises'
+import { open } from 'node:fs/promises'
 import { mimeTypeFromPath } from '../utils/mime.js'
 import type { OperationResult } from '../operations/types.js'
 
@@ -38,6 +38,7 @@ export function toResultEnvelope(result: OperationResult): ResultEnvelope {
 }
 
 export interface LoadedImage {
+  path: string
   base64: string
   mimeType: string
   label?: string
@@ -71,19 +72,9 @@ function base64Length(bytes: number): number {
   return 4 * Math.ceil(bytes / 3)
 }
 
-async function sizeOnDisk(filePath: string): Promise<number> {
-  return stat(filePath)
-    .then((info) => info.size)
-    .catch(() => 0)
-}
-
 /**
  * Read image artifacts into base64 for interfaces that inline binary content
  * instead of referencing files.
- *
- * The first image is always inlined, so a budget smaller than one frame still
- * returns something; every image after it is inlined only while the encoded
- * total stays within `maxBase64Bytes`.
  */
 export async function loadImages(
   result: OperationResult,
@@ -97,26 +88,54 @@ export async function loadImages(
   const skipped: SkippedImage[] = []
   let remaining = budget
 
-  for (const [index, image] of source.entries()) {
-    if (index > 0) {
-      const sizeBytes = await sizeOnDisk(image.path)
-      if (base64Length(sizeBytes) > remaining) {
+  for (const image of source) {
+    const file = await open(image.path, 'r')
+    try {
+      const maxBytes = Math.floor(remaining / 4) * 3
+      const info = await file.stat()
+      if (info.size > maxBytes) {
         skipped.push({
           path: image.path,
-          sizeBytes,
+          sizeBytes: info.size,
           ...(image.label ? { label: image.label } : {}),
         })
         continue
       }
-    }
 
-    const buffer = await readFile(image.path)
-    remaining -= base64Length(buffer.byteLength)
-    images.push({
-      base64: buffer.toString('base64'),
-      mimeType: image.mimeType || mimeTypeFromPath(image.path) || 'image/jpeg',
-      ...(image.label ? { label: image.label } : {}),
-    })
+      const chunks: Buffer[] = []
+      let total = 0
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1))
+      while (total <= maxBytes) {
+        const { bytesRead } = await file.read(
+          chunk,
+          0,
+          Math.min(chunk.length, maxBytes - total + 1),
+          null,
+        )
+        if (bytesRead === 0) break
+        total += bytesRead
+        if (total <= maxBytes) chunks.push(Buffer.from(chunk.subarray(0, bytesRead)))
+      }
+
+      if (total > maxBytes) {
+        skipped.push({
+          path: image.path,
+          sizeBytes: Math.max(total, (await file.stat()).size),
+          ...(image.label ? { label: image.label } : {}),
+        })
+        continue
+      }
+      const buffer = Buffer.concat(chunks, total)
+      remaining -= base64Length(buffer.byteLength)
+      images.push({
+        path: image.path,
+        base64: buffer.toString('base64'),
+        mimeType: image.mimeType || mimeTypeFromPath(image.path) || 'image/jpeg',
+        ...(image.label ? { label: image.label } : {}),
+      })
+    } finally {
+      await file.close()
+    }
   }
 
   return { images, skipped }

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { loadConfig } from '../../src/config.js'
 import {
   GeminiMediaService,
@@ -66,6 +69,7 @@ const uploadParams = {
   mimeType: 'video/mp4',
   sizeBytes: 1024,
   mtimeMs: 1_700_000_000_000,
+  cacheKey: 'content:demo',
 }
 
 describe('GeminiMediaService', () => {
@@ -153,14 +157,47 @@ describe('GeminiMediaService', () => {
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
   })
 
-  it('treats a different size as a different source', async () => {
+  it('does not reuse a mutable local file after a same-size rewrite with preserved mtime', async () => {
     const api = createFakeApi()
     const service = createService(api)
+    const dir = await mkdtemp(path.join(tmpdir(), 'va-upload-'))
+    const file = path.join(dir, 'sample.mp4')
+    const uploaded: string[] = []
+    api.uploadFile.mockImplementation(async ({ path: source }: { path: string }) => {
+      uploaded.push(await readFile(source, 'utf8'))
+      return handle()
+    })
+    try {
+      const mtime = new Date('2023-11-14T22:13:20Z')
+      const params = { path: file, mimeType: 'video/mp4', sizeBytes: 4, mtimeMs: mtime.getTime() }
+      await writeFile(file, 'AAAA')
+      await utimes(file, mtime, mtime)
+      await service.ensureUploaded(params)
+      await writeFile(file, 'BBBB')
+      await utimes(file, mtime, mtime)
+      await service.ensureUploaded(params)
+      expect(uploaded).toEqual(['AAAA', 'BBBB'])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 
-    await service.ensureUploaded(uploadParams)
-    await service.ensureUploaded({ ...uploadParams, sizeBytes: 2048 })
-
+  it('does not coalesce concurrent uploads without a content identity', async () => {
+    const api = createFakeApi()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    api.uploadFile.mockImplementation(async () => {
+      await gate
+      return handle()
+    })
+    const service = createService(api)
+    const { cacheKey: _cacheKey, ...local } = uploadParams
+    const uploads = Promise.all([service.ensureUploaded(local), service.ensureUploaded(local)])
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
+    release()
+    await uploads
   })
 
   it('reuses one upload when a stable cache key identifies the source', async () => {

@@ -2,8 +2,32 @@ import { randomUUID } from 'node:crypto'
 import { link, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { canonicalPath, isSameFile, sweepStaleTempDirs } from '../../src/utils/fsUtils.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  canonicalPath,
+  isSameFile,
+  removeDir,
+  sweepStaleTempDirs,
+} from '../../src/utils/fsUtils.js'
+import { createLogger } from '../../src/utils/logger.js'
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, rm: vi.fn(actual.rm) }
+})
+
+describe('removeDir', () => {
+  it('logs a failed cleanup without throwing or hiding the path', async () => {
+    const warn = vi.fn()
+    const logger = { ...createLogger('silent'), warn }
+    const failure = Object.assign(new Error('access denied'), { code: 'EACCES' })
+    vi.mocked(rm).mockRejectedValueOnce(failure)
+
+    await expect(removeDir('temporary-media', logger)).resolves.toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('temporary-media'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('access denied'))
+  })
+})
 
 async function tryLinkDir(target: string, linkPath: string): Promise<boolean> {
   try {
