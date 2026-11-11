@@ -293,7 +293,7 @@ Agent Skill ──> CLI adapter ─┘
 
 The registry (`src/operations/registry.ts`) is the single source of truth for names, schemas, and handlers. Capability parity between the two interfaces is structural, and enforced by `tests/contract/parity.test.ts`.
 
-See [`findings-and-plan.md`](findings-and-plan.md) for the design rationale and [`progress.md`](progress.md) for implementation status.
+See [`findings-and-plan.md`](findings-and-plan.md) for the original design rationale.
 
 ## Development
 
