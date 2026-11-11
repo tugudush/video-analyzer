@@ -198,6 +198,7 @@ node ~/.copilot/skills/video-analyzer/scripts/invoke.mjs list
 ## Use the CLI Directly
 
 ```bash
+video-analyzer --version
 video-analyzer list
 video-analyzer help extract_frames
 video-analyzer get_video_info --input '{"videoPath":"./demo.mp4"}' --pretty
@@ -252,7 +253,7 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 | ------------------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                                            |
 | `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                                |
-| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for sampling and extraction (scene capped at 200); `0` keeps only the 500-frame hard cap                 |
+| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for `extract_frames` (scene capped at 200); `0` keeps only the 500-frame hard cap                        |
 | `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                                            |
 | `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation; the remaining upload budget can shorten it |
 | `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Budget for uploading the media and waiting for `ACTIVE`; the clock starts before the upload                           |
@@ -281,7 +282,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Sensitive media leaves the machine** for AI operations.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
-- **Frame extraction writes to disk.** Returned image paths persist until you delete them.
+- **Frame extraction writes to disk.** Returned image paths persist until you delete them. By default they go into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
 
 ## Architecture
 

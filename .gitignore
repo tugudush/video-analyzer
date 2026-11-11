@@ -2,6 +2,8 @@ node_modules/
 dist/
 coverage/
 .video-analyzer/
+# Generated artifacts from extract_frames, relative to the working directory.
+video-analyzer-output/
 *.log
 .DS_Store
 .env

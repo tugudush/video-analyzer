@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import type { Config } from '../config.js'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
-import { createTempDir, ensureDir, removeDir } from '../utils/fsUtils.js'
+import { createTempDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
 import { downloadToFile } from '../utils/net.js'
 
@@ -166,17 +166,4 @@ export async function resolveMediaInput(
   }
 
   return resolveLocal(trimmed)
-}
-
-/** Resolve an output path, creating its parent directory. */
-export async function resolveOutputPath(
-  requested: string | undefined,
-  config: Config,
-  fallbackName: string,
-): Promise<string> {
-  const target = requested
-    ? path.resolve(requested)
-    : path.resolve(config.outputDir ?? process.cwd(), fallbackName)
-  await ensureDir(path.dirname(target))
-  return target
 }

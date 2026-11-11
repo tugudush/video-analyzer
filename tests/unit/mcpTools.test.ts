@@ -4,7 +4,10 @@ import { createLogger } from '../../src/utils/logger.js'
 
 const { executeOperation } = vi.hoisted(() => ({ executeOperation: vi.fn() }))
 
-vi.mock('../../src/operations/execute.js', () => ({ executeOperation }))
+vi.mock('../../src/operations/execute.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/operations/execute.js')>()),
+  executeOperation,
+}))
 
 const { loadOperationsForMcp } = await import('../../src/adapters/mcpTools.js')
 

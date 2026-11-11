@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
+  assertGeminiAvailable,
   getGeminiService,
   prepareMedia,
   statForUpload,
@@ -37,6 +38,7 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
   requiresGemini: true,
 
   async run(input, ctx) {
+    assertGeminiAvailable(ctx)
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)

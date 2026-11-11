@@ -186,6 +186,19 @@ written, the response adds a warning and `data.truncated: true`, and the pages
 describe that shorter list. `maxImages` limits the returned page, never how many
 frames are produced.
 
+Each `t=` label in `interval` mode is the presentation time ffmpeg reported for
+that frame (`pts_time`), not the frame index multiplied by `intervalSec`, so the
+label describes the pixels actually returned even for variable-frame-rate input
+or when the budget cuts the run short. If a build reports no frame times, the
+response falls back to the sampling grid and adds a warning saying so.
+
+`timestamps` mode validates the whole array against the media duration before the
+first ffmpeg call. A value at or beyond the end of the clip is rejected as
+`INVALID_INPUT` with the offending value and the duration in the message, instead
+of failing the run and stranding the frames the valid values produced. If an
+extraction fails for any other reason, the artifact folder created for the
+request is removed, so a reported `outputDir` always contains a complete set.
+
 `interval` mode also reports `data.expectedFrames` (how many frames the interval
 would produce across the whole media) and `data.frameBudget` (the budget that was
 applied), so a caller can decide whether to re-run without parsing the warning.

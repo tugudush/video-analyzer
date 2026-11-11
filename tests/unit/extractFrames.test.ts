@@ -31,19 +31,34 @@ interface FakeMedia {
   durationSeconds: number
   /** Timestamps the fake scene-detection pass reports. */
   sceneTimes?: number[]
+  /** Whether ffprobe reports a video stream. Defaults to true. */
+  hasVideo?: boolean
+  /** Report success without writing output files, to model a phantom path. */
+  writeOutputs?: boolean
+  /** Shift every reported `pts_time`, to prove labels come from ffmpeg. */
+  ptsOffset?: number
 }
 
 type Callback = (error: Error | null, result?: { stdout: string; stderr: string }) => void
 
-function framesForInterval(args: string[], durationSeconds: number): number {
+function intervalOf(args: string[]): number {
   const filter = args[args.indexOf('-vf') + 1] ?? ''
   const match = /fps=1\/([0-9.]+)/.exec(filter)
-  if (!match) return 0
-  const interval = Number(match[1])
+  return match ? Number(match[1]) : 0
+}
+
+function framesForInterval(args: string[], durationSeconds: number): number {
+  const interval = intervalOf(args)
   return interval > 0 ? Math.max(1, Math.ceil(durationSeconds / interval)) : 0
 }
 
-function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
+function installFakes({
+  durationSeconds,
+  sceneTimes = [],
+  hasVideo = true,
+  writeOutputs = true,
+  ptsOffset = 0,
+}: FakeMedia): {
   frameLimit: () => string | undefined
 } {
   let lastFrameLimit: string | undefined
@@ -53,17 +68,19 @@ function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
       if (file === 'ffprobe') {
         cb(null, {
           stdout: JSON.stringify({
-            streams: [
-              {
-                codec_type: 'video',
-                codec_name: 'h264',
-                width: 320,
-                height: 240,
-                avg_frame_rate: '15/1',
-                r_frame_rate: '15/1',
-                pix_fmt: 'yuv420p',
-              },
-            ],
+            streams: hasVideo
+              ? [
+                  {
+                    codec_type: 'video',
+                    codec_name: 'h264',
+                    width: 320,
+                    height: 240,
+                    avg_frame_rate: '15/1',
+                    r_frame_rate: '15/1',
+                    pix_fmt: 'yuv420p',
+                  },
+                ]
+              : [],
             format: {
               duration: String(durationSeconds),
               format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
@@ -91,21 +108,32 @@ function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
 
       const target = args[args.length - 1] as string
       const targets: string[] = []
+      let stderr = ''
       if (target.includes('%04d')) {
         const expected = framesForInterval(args, durationSeconds)
+        const interval = intervalOf(args)
         const allowed =
           lastFrameLimit === undefined ? expected : Math.min(Number(lastFrameLimit), expected)
         for (let index = 1; index <= allowed; index++) {
           targets.push(target.replace('%04d', String(index).padStart(4, '0')))
         }
+        // Real ffmpeg with `showinfo` reports every frame's presentation time.
+        stderr = targets
+          .map(
+            (_, index) =>
+              `[Parsed_showinfo_3 @ 0x0] n:${index} pts:0 pts_time:${(index * interval + ptsOffset).toFixed(3)}`,
+          )
+          .join('\n')
       } else if (lastFrameLimit === undefined || Number(lastFrameLimit) > 0) {
         targets.push(target)
       }
 
       void (async () => {
         try {
-          for (const framePath of targets) await writeFile(framePath, `frame ${framePath}`)
-          cb(null, { stdout: '', stderr: '' })
+          if (writeOutputs) {
+            for (const framePath of targets) await writeFile(framePath, `frame ${framePath}`)
+          }
+          cb(null, { stdout: '', stderr })
         } catch (error) {
           cb(error as Error)
         }
@@ -426,4 +454,167 @@ describe('resolveFrameBudget', () => {
   it('never returns zero, which ffmpeg would read as unlimited', () => {
     expect(resolveFrameBudget(0.5)).toBe(1)
   })
+})
+
+async function listIfPresent(dir: string): Promise<string[]> {
+  return readdir(dir).catch(() => [] as string[])
+}
+
+describe('extract_frames timestamps mode', () => {
+  let dir: string
+  let source: string
+  let outputDir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-timestamps-'))
+    source = path.join(dir, 'sample.mp4')
+    outputDir = path.join(dir, 'frames')
+    await writeFile(source, 'placeholder media bytes')
+    mocks.execFile.mockReset()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('rejects a timestamp beyond the media duration before any subprocess runs', async () => {
+    installFakes({ durationSeconds: 2 })
+    const config = loadConfig({})
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        { videoPath: source, mode: 'timestamps', timestamps: [0.5, 999], outputDir },
+        config,
+      ),
+    ).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      details: { timestamp: 999, durationSeconds: 2 },
+    })
+
+    expect(mocks.execFile.mock.calls.filter(([file]) => file === 'ffmpeg')).toHaveLength(0)
+    // Nothing was written, so nothing has to be cleaned up either.
+    expect(await listIfPresent(outputDir)).toEqual([])
+  })
+
+  it('rejects a timestamp at the exact duration', async () => {
+    installFakes({ durationSeconds: 2 })
+    const config = loadConfig({})
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        { videoPath: source, mode: 'timestamps', timestamps: [2], outputDir },
+        config,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT', details: { timestamp: 2 } })
+  })
+
+  it('labels each requested timestamp', async () => {
+    installFakes({ durationSeconds: 5 })
+    const config = loadConfig({})
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'timestamps', timestamps: [0.5, 1.5], outputDir },
+      config,
+    )
+
+    expect(result.data).toMatchObject({
+      mode: 'timestamps',
+      totalFrames: 2,
+      timestamps: [0.5, 1.5],
+    })
+    expect(result.images?.map((image) => image.label)).toEqual(['t=0.50s', 't=1.50s'])
+  })
+
+  it('reports a missing output file and removes the partial artifact folder', async () => {
+    installFakes({ durationSeconds: 5, writeOutputs: false })
+    const config = loadConfig({})
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        { videoPath: source, mode: 'timestamps', timestamps: [1], outputDir },
+        config,
+      ),
+    ).rejects.toMatchObject({
+      code: 'MEDIA_PROCESSING_FAILED',
+      details: { timestamp: 1 },
+    })
+
+    expect(await listIfPresent(outputDir)).toEqual([])
+  })
+})
+
+describe('extract_frames interval timestamps', () => {
+  let dir: string
+  let source: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-interval-'))
+    source = path.join(dir, 'sample.mp4')
+    await writeFile(source, 'placeholder media bytes')
+    mocks.execFile.mockReset()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('uses the presentation times ffmpeg reports, not the frame index', async () => {
+    installFakes({ durationSeconds: 4, ptsOffset: 0.5 })
+    const config = loadConfig({})
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, outputDir: path.join(dir, 'frames') },
+      config,
+    )
+
+    expect(result.data).toMatchObject({ timestamps: [0.5, 1.5, 2.5, 3.5] })
+    expect(result.images?.map((image) => image.label)).toEqual([
+      't=0.50s',
+      't=1.50s',
+      't=2.50s',
+      't=3.50s',
+    ])
+    expect(result.warnings ?? []).toHaveLength(0)
+  })
+})
+
+describe('extract_frames audio-only input', () => {
+  let dir: string
+  let source: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-audio-'))
+    source = path.join(dir, 'sample.m4a')
+    await writeFile(source, 'placeholder media bytes')
+    mocks.execFile.mockReset()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it.each(['even', 'interval', 'timestamps', 'scene'] as const)(
+    'rejects %s mode with an actionable error',
+    async (mode) => {
+      installFakes({ durationSeconds: 10, hasVideo: false, sceneTimes: [1] })
+      const config = loadConfig({})
+      const input =
+        mode === 'interval'
+          ? { videoPath: source, mode, intervalSec: 1 }
+          : mode === 'timestamps'
+            ? { videoPath: source, mode, timestamps: [1] }
+            : { videoPath: source, mode }
+
+      await expect(executeOperation(extractFramesOperation, input, config)).rejects.toMatchObject({
+        code: 'UNSUPPORTED_INPUT',
+      })
+
+      expect(mocks.execFile.mock.calls.filter(([file]) => file === 'ffmpeg')).toHaveLength(0)
+    },
+  )
 })

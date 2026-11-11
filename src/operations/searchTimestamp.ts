@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
+  assertGeminiAvailable,
   formatTimestamp,
   getGeminiService,
   prepareMedia,
@@ -85,6 +86,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
   requiresGemini: true,
 
   async run(input, ctx) {
+    assertGeminiAvailable(ctx)
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)

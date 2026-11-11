@@ -1,5 +1,8 @@
+import { readFile } from 'node:fs/promises'
+import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { defaultCliIO, parseArgs, runCli } from '../../src/adapters/cli.js'
+import { defaultCliIO, parseArgs, readStdinUntilIdle, runCli } from '../../src/adapters/cli.js'
+import { VERSION } from '../../src/version.js'
 
 function capture() {
   const out: string[] = []
@@ -38,6 +41,35 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['analyze_video', '--input'])).toThrowError(/--input requires/)
     expect(() => parseArgs(['analyze_video', '--input-file'])).toThrowError(/--input-file requires/)
   })
+
+  it('parses --version in both positions', () => {
+    expect(parseArgs(['--version']).version).toBe(true)
+    expect(parseArgs(['-v']).version).toBe(true)
+    expect(parseArgs(['list', '--version']).version).toBe(true)
+    expect(parseArgs(['list']).version).toBe(false)
+  })
+})
+
+describe('readStdinUntilIdle', () => {
+  it('reads a piped payload to EOF', async () => {
+    const stream = Readable.from([Buffer.from('{"videoPath":"a.mp4"}')])
+    await expect(readStdinUntilIdle(stream, 50)).resolves.toBe('{"videoPath":"a.mp4"}')
+  })
+
+  it('treats a silent stream as no payload instead of blocking', async () => {
+    const stream = new PassThrough()
+    const startedAt = Date.now()
+
+    await expect(readStdinUntilIdle(stream, 20)).resolves.toBeUndefined()
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    stream.destroy()
+  })
+
+  it('returns undefined for whitespace-only input', async () => {
+    const stream = Readable.from([Buffer.from('  \n ')])
+    await expect(readStdinUntilIdle(stream, 50)).resolves.toBeUndefined()
+  })
 })
 
 describe('runCli', () => {
@@ -64,6 +96,18 @@ describe('runCli', () => {
     expect(code).toBe(0)
     expect(stdoutText()).toContain('Usage:')
     expect(stdoutText()).toContain('analyze_video')
+  })
+
+  it('reports the package version from a single source', async () => {
+    const { io, stdoutText } = capture()
+    const code = await runCli(['--version'], io, {})
+    const manifest = JSON.parse(
+      await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { version: string }
+
+    expect(code).toBe(0)
+    expect(stdoutText().trim()).toBe(VERSION)
+    expect(VERSION).toBe(manifest.version)
   })
 
   it('prints an operation schema for help <operation>', async () => {

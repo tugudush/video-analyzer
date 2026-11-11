@@ -7,6 +7,7 @@
 
 export { loadConfig, requireGeminiApiKey, DEFAULT_GEMINI_MODEL } from './config.js'
 export type { Config } from './config.js'
+export { VERSION } from './version.js'
 
 export {
   OPERATIONS,

@@ -31,18 +31,6 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.webp': 'image/webp',
 }
 
-export const VIDEO_EXTENSIONS = new Set(
-  Object.entries(MIME_BY_EXTENSION)
-    .filter(([, mime]) => mime.startsWith('video/'))
-    .map(([ext]) => ext),
-)
-
-export const AUDIO_EXTENSIONS = new Set(
-  Object.entries(MIME_BY_EXTENSION)
-    .filter(([, mime]) => mime.startsWith('audio/'))
-    .map(([ext]) => ext),
-)
-
 /** Guess a MIME type from a file extension, or `undefined` when unknown. */
 export function mimeTypeFromPath(filePath: string): string | undefined {
   return MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()]
@@ -59,10 +47,4 @@ export function isVideoMimeType(mimeType: string): boolean {
 export function isMediaMimeType(mimeType: string | undefined): boolean {
   if (!mimeType) return false
   return isAudioMimeType(mimeType) || isVideoMimeType(mimeType)
-}
-
-/** Extension to use for a downloaded file when the server does not supply one. */
-export function extensionForMimeType(mimeType: string): string {
-  const found = Object.entries(MIME_BY_EXTENSION).find(([, mime]) => mime === mimeType)
-  return found ? found[0] : '.bin'
 }

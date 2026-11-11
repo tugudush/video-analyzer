@@ -303,6 +303,15 @@ export async function extractFramesEvenly(
 export interface IntervalExtractionResult {
   /** Frames written to disk, in filename order. */
   paths: string[]
+  /**
+   * Presentation time of each written frame, in the same order as `paths`.
+   *
+   * Parsed from ffmpeg's `showinfo` output so the label describes the pixels
+   * returned rather than the nominal sampling grid.
+   */
+  timestamps: number[]
+  /** False when ffmpeg reported no `pts_time` and the grid was used instead. */
+  timestampsExact: boolean
   /** Frames the interval would produce across the whole media, before the budget. */
   expectedFrames: number
   /** Frame budget that was enforced while ffmpeg was writing. */
@@ -338,17 +347,21 @@ export async function extractFramesAtInterval(
   const frameBudget = resolveFrameBudget(options.maxFrames)
 
   const pattern = path.join(options.outDir, 'frame-%04d.jpg')
-  await run(
+  // `showinfo` reports the presentation time of every frame the filter chain
+  // emits, so the timestamps returned to the caller come from the frames that
+  // were actually written instead of being assumed from the frame index.
+  const { stderr } = await run(
     config.ffmpegPath,
     [
       '-hide_banner',
       '-loglevel',
-      'error',
+      'info',
+      '-nostats',
       '-y',
       '-i',
       filePath,
       '-vf',
-      `fps=1/${intervalSec},scale=${options.maxWidth ?? 1280}:-2`,
+      `fps=1/${intervalSec},scale=${options.maxWidth ?? 1280}:-2,showinfo`,
       // Stop the encoder at the budget so a long input cannot fill the disk.
       '-frames:v',
       String(frameBudget),
@@ -361,9 +374,15 @@ export async function extractFramesAtInterval(
   )
 
   const paths = await listFrames(options.outDir)
+  const reported = [...stderr.matchAll(/pts_time:([0-9.]+)/g)]
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+  const timestamps = paths.map((_, index) => reported[index] ?? index * intervalSec)
 
   return {
     paths,
+    timestamps,
+    timestampsExact: paths.every((_, index) => reported[index] !== undefined),
     expectedFrames,
     frameBudget,
     // Compare against what was actually written: a shortfall means the list
@@ -411,6 +430,17 @@ export async function extractFramesAtTimestamps(
       FFMPEG_TIMEOUT_MS,
       options.signal,
     )
+    const info = await stat(target).catch(() => null)
+    if (!info || info.size === 0) {
+      throw new VideoAnalyzerError(
+        'MEDIA_PROCESSING_FAILED',
+        `ffmpeg reported success but wrote no frame at ${timestamp}s.`,
+        {
+          hint: 'This build may not be able to seek to that position or write the requested output.',
+          details: { timestamp, path: target },
+        },
+      )
+    }
     results.push(target)
   }
 
@@ -468,5 +498,3 @@ export async function extractSceneFrames(
   const paths = await extractFramesAtTimestamps(filePath, timestamps, config, options)
   return { paths, timestamps, truncated: unique.length > limit }
 }
-
-export { run as runCommand }

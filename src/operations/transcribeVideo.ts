@@ -2,9 +2,9 @@ import { stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
-import { invalidInput } from '../utils/errors.js'
+import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { ensureDir, isSameFile } from '../utils/fsUtils.js'
-import { getGeminiService, prepareMedia, statForUpload } from './shared.js'
+import { assertGeminiAvailable, getGeminiService, prepareMedia, statForUpload } from './shared.js'
 import type { Operation } from './types.js'
 
 export const transcribeVideoInput = z.object({
@@ -78,8 +78,8 @@ function sourceAliasError(sourcePath: string, target: string) {
 
 /**
  * Output-target refusals are `INVALID_INPUT`: the caller can act on them by
- * changing the request. `OUTPUT_FAILED` stays reserved for failures while
- * writing, which `writeTranscript` surfaces unchanged.
+ * changing the request. Failures while writing are surfaced as `OUTPUT_FAILED` by
+ * `writeTranscript`.
  */
 function existingTargetError(target: string, cause?: unknown) {
   return invalidInput(`Refusing to overwrite an existing file: ${target}`, {
@@ -149,7 +149,11 @@ async function writeTranscript(target: string, text: string, overwrite: boolean)
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'EEXIST') throw existingTargetError(target, error)
     if (code === 'EISDIR') throw directoryTargetError(target, error)
-    throw error
+    throw new VideoAnalyzerError('OUTPUT_FAILED', `Could not write the transcript to ${target}.`, {
+      hint: 'The transcript was generated; choose a writable path or free disk space.',
+      details: { outputPath: target, ...(code ? { code } : {}) },
+      cause: error,
+    })
   }
 }
 
@@ -161,6 +165,11 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
   inputSchema: transcribeVideoInput,
   category: 'analysis',
   requiresGemini: true,
+  // The transcript itself is returned in the response, but `outputPath` writes a
+  // file and `overwrite: true` can replace an existing one, so the tool is
+  // neither read-only nor non-destructive.
+  readOnly: false,
+  destructive: true,
 
   async run(input, ctx) {
     const sourcePath = localSourcePath(input.videoPath)
@@ -168,6 +177,9 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
       ? await resolveTranscriptTarget(input.outputPath, input.overwrite ?? false, sourcePath)
       : undefined
 
+    // Cheap local validation first, then the provider requirement, and only then
+    // the download and probe work.
+    assertGeminiAvailable(ctx)
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       // A downloaded copy only has a local path after resolution.

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  extensionForMimeType,
   isAudioMimeType,
   isMediaMimeType,
   isVideoMimeType,
@@ -33,10 +32,5 @@ describe('mime classification', () => {
     expect(isMediaMimeType('video/webm')).toBe(true)
     expect(isMediaMimeType('image/jpeg')).toBe(false)
     expect(isMediaMimeType(undefined)).toBe(false)
-  })
-
-  it('maps a mime type back to an extension', () => {
-    expect(extensionForMimeType('video/mp4')).toBe('.mp4')
-    expect(extensionForMimeType('application/octet-stream')).toBe('.bin')
   })
 })

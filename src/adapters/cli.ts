@@ -1,13 +1,15 @@
 import { readFile } from 'node:fs/promises'
+import type { Readable } from 'node:stream'
 import { loadConfig, type Config } from '../config.js'
 import { listOperations, requireOperation } from '../operations/registry.js'
-import { executeOperation } from '../operations/execute.js'
+import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
 import { toResultEnvelope } from './envelope.js'
 import { createLogger } from '../utils/logger.js'
 import { toErrorEnvelope, toVideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import type { ErrorEnvelope } from '../utils/errors.js'
-import { zodErrorToInvalidInput } from './mcpTools.js'
-import { z, ZodError } from 'zod'
+import { sweepStaleTempDirs } from '../utils/fsUtils.js'
+import { VERSION } from '../version.js'
+import { ZodError, z } from 'zod'
 
 export interface CliIO {
   stdout(text: string): void
@@ -25,6 +27,54 @@ export interface CliIO {
   onCancel?(handler: () => void): () => void
 }
 
+/** How long stdin may stay silent before the CLI assumes no payload is coming. */
+const STDIN_IDLE_TIMEOUT_MS = 500
+
+/**
+ * Read a text payload from a stream until EOF, or until it goes idle.
+ *
+ * An inherited pipe that the caller never closes would otherwise block the
+ * process indefinitely before `--input` is even considered, so silence is treated
+ * as "no stdin payload". Data arriving restarts the window, so a slow writer is
+ * still read in full.
+ */
+export function readStdinUntilIdle(
+  stream: Readable,
+  idleMs = STDIN_IDLE_TIMEOUT_MS,
+): Promise<string | undefined> {
+  const chunks: Buffer[] = []
+
+  return new Promise((resolve) => {
+    let timer: NodeJS.Timeout | undefined
+
+    const finish = () => {
+      if (timer) clearTimeout(timer)
+      timer = undefined
+      stream.off('data', onData)
+      stream.off('end', finish)
+      stream.off('error', finish)
+      stream.pause()
+      const text = Buffer.concat(chunks).toString('utf8')
+      resolve(text.trim() === '' ? undefined : text)
+    }
+
+    const armIdleTimer = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(finish, idleMs)
+    }
+
+    function onData(chunk: Buffer | string): void {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      armIdleTimer()
+    }
+
+    stream.on('data', onData)
+    stream.on('end', finish)
+    stream.on('error', finish)
+    armIdleTimer()
+  })
+}
+
 export const defaultCliIO: CliIO = {
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
@@ -34,18 +84,14 @@ export const defaultCliIO: CliIO = {
   },
   readStdin: async () => {
     if (process.stdin.isTTY) return undefined
-    const chunks: Buffer[] = []
-    for await (const chunk of process.stdin) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
-    }
-    const text = Buffer.concat(chunks).toString('utf8')
-    return text.trim() === '' ? undefined : text
+    return readStdinUntilIdle(process.stdin)
   },
 }
 
 export const CLI_USAGE = `video-analyzer — Gemini-powered video and audio analysis
 
 Usage:
+  video-analyzer --version
   video-analyzer list
   video-analyzer <operation> --input '<json>' [--input-file <path>] [--pretty]
   video-analyzer <operation> < <json-file>          (JSON on stdin)
@@ -83,12 +129,20 @@ interface ParsedArgs {
   inputFile?: string
   pretty: boolean
   help: boolean
+  version: boolean
   rest: string[]
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  const [command = 'help', ...rest] = argv
-  const parsed: ParsedArgs = { command, pretty: false, help: false, rest: [] }
+  const [rawCommand = 'help', ...rest] = argv
+  const leadingVersionFlag = rawCommand === '--version' || rawCommand === '-v'
+  const parsed: ParsedArgs = {
+    command: leadingVersionFlag ? 'help' : rawCommand,
+    pretty: false,
+    help: false,
+    version: leadingVersionFlag,
+    rest: [],
+  }
 
   for (let index = 0; index < rest.length; index++) {
     const arg = rest[index]
@@ -96,6 +150,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === '--pretty') {
       parsed.pretty = true
+    } else if (arg === '--version' || arg === '-v') {
+      parsed.version = true
     } else if (arg === '--help' || arg === '-h') {
       parsed.help = true
     } else if (arg === '--input' || arg === '-i') {
@@ -162,6 +218,20 @@ function describeSchema(inputSchema: unknown): string {
   }
 }
 
+let tempSweepStarted = false
+
+/**
+ * Clean up temp directories left by a killed process.
+ *
+ * The MCP server does this at startup; the CLI is usually short-lived, so it
+ * sweeps once per process on the first operation instead.
+ */
+function sweepTempDirsOnce(): void {
+  if (tempSweepStarted) return
+  tempSweepStarted = true
+  void sweepStaleTempDirs().catch(() => undefined)
+}
+
 /**
  * CLI entry point.
  *
@@ -185,6 +255,11 @@ export async function runCli(
     parsed = parseArgs(argv)
   } catch (error) {
     return writeError(io, toErrorEnvelope(error), false)
+  }
+
+  if (parsed.version) {
+    io.stdout(`${VERSION}\n`)
+    return 0
   }
 
   if (parsed.command === 'help' || parsed.help) {
@@ -240,6 +315,7 @@ export async function runCli(
       throw error
     }
 
+    sweepTempDirsOnce()
     const logger = createLogger(config.logLevel)
     // Ctrl-C aborts the in-flight request instead of killing the process, so the
     // operation reports GEMINI_TIMEOUT and the envelope still reaches the caller.

@@ -6,9 +6,10 @@ import { loadOperationsForMcp } from './mcpTools.js'
 import { createLogger, setLogSink } from '../utils/logger.js'
 import { toVideoAnalyzerError } from '../utils/errors.js'
 import { sweepStaleTempDirs } from '../utils/fsUtils.js'
+import { VERSION } from '../version.js'
 
 export const SERVER_NAME = 'video-analyzer'
-export const SERVER_VERSION = '0.1.0'
+export const SERVER_VERSION = VERSION
 
 const SERVER_INSTRUCTIONS = [
   'Analysis toolkit for video and audio files.',
@@ -62,7 +63,7 @@ export function createMcpServer(config: Config): McpServerHandle {
         inputSchema: tool.inputSchema,
         annotations: {
           readOnlyHint: tool.readOnly,
-          destructiveHint: false,
+          destructiveHint: tool.destructive,
           openWorldHint: true,
         },
       },

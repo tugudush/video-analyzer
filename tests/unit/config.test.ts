@@ -28,8 +28,6 @@ describe('loadConfig', () => {
       VIDEO_ANALYZER_LOG_LEVEL: 'debug',
       VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS: 'true',
       VIDEO_ANALYZER_OUTPUT_DIR: '/tmp/out',
-      YT_DLP_MAX_RESOLUTION: '720',
-      YT_DLP_PATH: '/opt/yt-dlp',
     })
 
     expect(config.geminiApiKey).toBe('key-123')
@@ -40,8 +38,12 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('debug')
     expect(config.allowPrivateHosts).toBe(true)
     expect(config.outputDir).toBe('/tmp/out')
-    expect(config.ytDlpMaxResolution).toBe(720)
-    expect(config.ytDlpPath).toBe('/opt/yt-dlp')
+  })
+
+  it('ignores the legacy yt-dlp settings', () => {
+    const config = loadConfig({ YT_DLP_PATH: '/opt/yt-dlp', YT_DLP_MAX_RESOLUTION: '720' })
+    expect(config).not.toHaveProperty('ytDlpPath')
+    expect(config).not.toHaveProperty('ytDlpMaxResolution')
   })
 
   it('treats blank strings as unset', () => {

@@ -125,6 +125,18 @@ ffmpeg/ffprobe ran but failed. The `hint` contains the tail of the ffmpeg error 
 usually a corrupt file, a stream-copy container mismatch, or a missing decoder.
 Re-encode, or try a different source file.
 
+`extract_frames` in `timestamps` mode reports this only after checking every
+requested value against the media duration, so an out-of-range timestamp comes
+back as `INVALID_INPUT` naming the value and the clip length instead.
+
+## OUTPUT_FAILED
+
+The transcript was generated but could not be written to `outputPath` (for
+example `ENOSPC`, `EACCES`, or a read-only volume). `details.outputPath` names the
+target and `details.code` the OS error. Choose a writable path or free disk space
+and re-run; re-transcribing is not required to know the text, which is also
+returned in the response summary.
+
 ## Nothing happens / no output
 
 The Skill launcher needs either a global `video-analyzer` binary or a local

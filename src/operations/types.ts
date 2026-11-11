@@ -48,11 +48,13 @@ export interface Operation<Schema extends z.ZodTypeAny = z.ZodTypeAny> {
   inputSchema: Schema
   /** Capability hints used by the operation-selection guidance in the Skill. */
   category: 'analysis' | 'local'
+  /** False when the operation can write files. Defaults to `category === 'analysis'`. */
+  readOnly?: boolean
+  /**
+   * True when the operation can replace a file the caller did not create during
+   * this call. Published to MCP clients as `destructiveHint`; defaults to false.
+   */
+  destructive?: boolean
   requiresGemini: boolean
   run(input: z.infer<Schema>, ctx: OperationContext): Promise<OperationResult>
-}
-
-export function progress(ctx: OperationContext, message: string): void {
-  ctx.onProgress?.(message)
-  ctx.logger.debug(message)
 }

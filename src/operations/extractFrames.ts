@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { z } from 'zod'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
+import { removeDir } from '../utils/fsUtils.js'
 import {
   MAX_FRAMES_PER_EXTRACTION,
   MAX_SCENE_FRAMES,
@@ -77,6 +78,31 @@ const DEFAULT_COUNT = 5
 const DEFAULT_SCENE_THRESHOLD = 0.35
 const DEFAULT_MAX_IMAGES = 20
 
+/**
+ * Reject timestamps at or beyond the end of the media.
+ *
+ * FFmpeg would otherwise fail the whole run (and leave the earlier frames on
+ * disk) without naming the offending value, so this is checked up front with the
+ * duration in the message.
+ */
+function assertTimestampsWithinDuration(timestamps: number[], durationSeconds: number): void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return
+  const index = timestamps.findIndex((timestamp) => timestamp >= durationSeconds)
+  if (index === -1) return
+  const duration = durationSeconds.toFixed(2)
+  throw invalidInput(
+    `Timestamp ${timestamps[index]}s is outside the media: the clip is ${duration}s long.`,
+    {
+      hint: `Use values from 0 up to ${duration}. Timestamps are indexed from the start of the media.`,
+      details: {
+        timestamp: timestamps[index],
+        index,
+        durationSeconds: Number(duration),
+      },
+    },
+  )
+}
+
 export const extractFramesOperation: Operation<typeof extractFramesInput> = {
   name: 'extract_frames',
   title: 'Extract Frames',
@@ -101,13 +127,24 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
 
     const warnings: string[] = []
     const prepared = await prepareMedia(input.videoPath, ctx)
+    let outDir: string | undefined
 
     try {
-      if (mode !== 'scene' && !prepared.metadata.hasVideo) {
+      if (!prepared.metadata.hasVideo) {
         throw new VideoAnalyzerError(
           'UNSUPPORTED_INPUT',
           'Frame extraction needs a video stream; this input has none.',
           { hint: 'Use transcribe_video for audio-only files.' },
+        )
+      }
+
+      // Validate the whole array before the first subprocess: one bad value used
+      // to discard the frames the valid timestamps produced and report a bare
+      // "ffmpeg failed".
+      if (mode === 'timestamps') {
+        assertTimestampsWithinDuration(
+          input.timestamps as number[],
+          prepared.metadata.durationSeconds,
         )
       }
 
@@ -116,7 +153,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
       // listing, so `totalFrames`, paging, and `truncated` would describe a
       // mixed set instead of the frames this request produced. `outputDir` is a
       // parent; `createArtifactDir` resolves it and returns an absolute path.
-      const outDir = await createArtifactDir(ctx.config, 'frames', input.outputDir)
+      outDir = await createArtifactDir(ctx.config, 'frames', input.outputDir)
 
       let paths: string[] = []
       const timestamps: number[] = []
@@ -142,7 +179,12 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         paths = result.paths
         truncated = result.truncated
         intervalStats = { expectedFrames: result.expectedFrames, frameBudget: result.frameBudget }
-        paths.forEach((_, index) => timestamps.push(index * intervalSec))
+        timestamps.push(...result.timestamps)
+        if (!result.timestampsExact) {
+          warnings.push(
+            'ffmpeg did not report frame times, so the timestamps are the requested sampling grid (every intervalSec), not exact presentation times.',
+          )
+        }
         if (result.truncated) {
           // `0` and any value at or above the hard ceiling both end up at the
           // ceiling, where raising the setting would change nothing.
@@ -241,6 +283,11 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         images,
         ...(warnings.length > 0 ? { warnings } : {}),
       }
+    } catch (error) {
+      // A failed extraction must not leave a half-populated folder behind, so the
+      // caller can trust that reported output directories are complete.
+      await removeDir(outDir)
+      throw error
     } finally {
       await prepared.media.cleanup()
     }

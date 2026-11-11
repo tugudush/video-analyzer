@@ -2,8 +2,7 @@ import { ZodError, type z } from 'zod'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Config } from '../config.js'
 import { listOperations } from '../operations/registry.js'
-import { executeOperation } from '../operations/execute.js'
-import { invalidInput } from '../utils/errors.js'
+import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
 import type { Logger } from '../utils/logger.js'
 import { loadImages } from './envelope.js'
 
@@ -13,22 +12,12 @@ export interface McpToolDescriptor {
   description: string
   inputSchema: z.ZodTypeAny
   readOnly: boolean
+  destructive: boolean
   /**
    * Run the operation. `signal` carries MCP request cancellation so in-flight
    * Gemini calls and polling stop when the client gives up.
    */
   invoke(args: unknown, options?: { signal?: AbortSignal }): Promise<CallToolResult>
-}
-
-/** Turn a Zod validation failure into an actionable, interface-neutral error. */
-export function zodErrorToInvalidInput(error: ZodError): Error {
-  const issues = error.issues
-    .map((issue) => {
-      const location = issue.path.length > 0 ? issue.path.join('.') : '(input)'
-      return `${location}: ${issue.message}`
-    })
-    .join('; ')
-  return invalidInput(`Invalid arguments: ${issues}`)
 }
 
 async function toCallToolResult(
@@ -74,7 +63,8 @@ export function loadOperationsForMcp(
     title: operation.title,
     description: operation.description,
     inputSchema: operation.inputSchema,
-    readOnly: operation.category === 'analysis',
+    readOnly: operation.readOnly ?? operation.category === 'analysis',
+    destructive: operation.destructive ?? false,
     async invoke(args: unknown, options?: { signal?: AbortSignal }) {
       let parsed: unknown
       try {

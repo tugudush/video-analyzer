@@ -50,12 +50,17 @@ describe('CLI/MCP parity', () => {
   it('marks only analysis operations as read-only', () => {
     const tools = loadOperationsForMcp(loadConfig({}), createLogger('silent'))
     const readOnly = tools.filter((tool) => tool.readOnly).map((tool) => tool.name)
-    expect(readOnly).toEqual([
-      'analyze_video',
-      'summarize_video',
-      'search_timestamp',
-      'transcribe_video',
-    ])
+    expect(readOnly).toEqual(['analyze_video', 'summarize_video', 'search_timestamp'])
+  })
+
+  it('advertises destructive writes only for transcribe_video', () => {
+    const tools = loadOperationsForMcp(loadConfig({}), createLogger('silent'))
+    const destructive = tools.filter((tool) => tool.destructive).map((tool) => tool.name)
+    expect(destructive).toEqual(['transcribe_video'])
+    // A tool that can replace a caller-supplied file cannot also claim read-only.
+    for (const tool of tools) {
+      if (tool.destructive) expect(tool.readOnly).toBe(false)
+    }
   })
 
   it('excludes generative and licensing capabilities entirely', () => {

@@ -19,6 +19,8 @@ function withCredentials(rawUrl: string): string {
 }
 
 describe('remote media input policy', () => {
+  // The legacy `YT_DLP_PATH` setting is ignored — it is no longer parsed at all —
+  // so setting it here proves a configured downloader never changes the decision.
   const config = loadConfig({ YT_DLP_PATH: '/configured/downloader' })
   const privateConfig = loadConfig({
     YT_DLP_PATH: '/configured/downloader',

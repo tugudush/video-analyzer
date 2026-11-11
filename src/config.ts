@@ -15,9 +15,10 @@ export interface Config {
   geminiApiKey: string | undefined
   geminiModel: string
   /**
-   * Frame budget for AI-assisted sampling, scene detection, and `extract_frames`
-   * interval mode. `0` means no configured ceiling; a 500-frame hard ceiling per
-   * extraction still applies.
+   * Frame budget for `extract_frames`: `interval` mode stops at it, and scene
+   * mode uses it as a lower ceiling. AI operations send the whole file to Gemini
+   * and never sample frames, so this setting does not affect them. `0` means no
+   * configured ceiling; a 500-frame hard ceiling per extraction still applies.
    */
   maxFrames: number
   downloadMaxBytes: number
@@ -26,10 +27,6 @@ export interface Config {
   pollIntervalMs: number
   ffmpegPath: string
   ffprobePath: string
-  ytDlpPath: string | undefined
-  ytDlpMaxResolution: number | undefined
-  ytDlpCookiesFile: string | undefined
-  ytDlpImpersonate: string | undefined
   allowPrivateHosts: boolean
   logLevel: LogLevel
   /** Directory for files the caller asked us to keep. Defaults to the cwd. */
@@ -99,6 +96,10 @@ export function loadConfig(
     loadDotEnvInto(env, options.dotenvFile ?? path.join(process.cwd(), '.env'))
   }
 
+  // `YT_DLP_*` settings are deliberately unread: platform page downloads are
+  // disabled, so the documented legacy variables stay harmless no-ops instead of
+  // being parsed into a configuration surface nothing consumes.
+
   const logLevelRaw = env['VIDEO_ANALYZER_LOG_LEVEL']?.trim()
   const logLevel: LogLevel =
     logLevelRaw && isLogLevel(logLevelRaw) ? logLevelRaw : ('warn' satisfies LogLevel)
@@ -116,7 +117,6 @@ export function loadConfig(
     DEFAULTS.requestTimeoutMs,
     { min: 1_000 },
   )
-  const ytDlpMaxResolutionRaw = readString(env, 'YT_DLP_MAX_RESOLUTION')
 
   return {
     geminiApiKey: readString(env, 'GEMINI_API_KEY'),
@@ -132,10 +132,6 @@ export function loadConfig(
     }),
     ffmpegPath: readString(env, 'FFMPEG_PATH') ?? 'ffmpeg',
     ffprobePath: readString(env, 'FFPROBE_PATH') ?? 'ffprobe',
-    ytDlpPath: readString(env, 'YT_DLP_PATH'),
-    ytDlpMaxResolution: ytDlpMaxResolutionRaw ? Number(ytDlpMaxResolutionRaw) : undefined,
-    ytDlpCookiesFile: readString(env, 'YT_DLP_COOKIES_FILE'),
-    ytDlpImpersonate: readString(env, 'YT_DLP_IMPERSONATE'),
     allowPrivateHosts: readBool(env, 'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS', false),
     logLevel,
     outputDir: readString(env, 'VIDEO_ANALYZER_OUTPUT_DIR'),

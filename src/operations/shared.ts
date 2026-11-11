@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
-import type { Config } from '../config.js'
+import { requireGeminiApiKey, type Config } from '../config.js'
 import { GeminiMediaService } from '../services/gemini.js'
 import { getMediaMetadata, type MediaMetadata } from '../services/ffmpeg.js'
 import { resolveMediaInput, type ResolvedMedia } from '../services/mediaInput.js'
@@ -23,6 +23,19 @@ export function getGeminiService(ctx: OperationContext): GeminiMediaService {
     }
   }
   return sharedService.service
+}
+
+/**
+ * Assert the AI provider is usable before any media work starts.
+ *
+ * Resolving a remote input can download gigabytes and run `ffprobe`, so a missing
+ * key has to be reported first — otherwise the caller pays for the most expensive
+ * part of the call to learn about a one-line configuration fix. An injected
+ * service owns its own credentials, so it satisfies the requirement.
+ */
+export function assertGeminiAvailable(ctx: OperationContext): void {
+  if (ctx.geminiService) return
+  requireGeminiApiKey(ctx.config)
 }
 
 /** Reset the process-wide service (tests only). */
@@ -99,11 +112,13 @@ function pad(value: number, size = 2): string {
 /** `HH:MM:SS.mmm` for readable summaries. */
 export function formatTimestamp(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return 'unknown'
-  const total = Math.floor(seconds)
-  const hours = Math.floor(total / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  const secs = total % 60
-  const ms = Math.round((seconds - total) * 1000)
+  // Round once, in integer milliseconds: rounding the fractional part separately
+  // would let a value just below a whole second render as `.1000`.
+  const totalMs = Math.round(seconds * 1000)
+  const hours = Math.floor(totalMs / 3_600_000)
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000)
+  const secs = Math.floor((totalMs % 60_000) / 1000)
+  const ms = totalMs % 1000
   return `${pad(hours)}:${pad(minutes)}:${pad(secs)}.${pad(ms, 3)}`
 }
 
