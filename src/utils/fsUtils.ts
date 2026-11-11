@@ -1,20 +1,34 @@
-import { mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createLogger, type Logger } from './logger.js'
 
-const TEMP_PREFIX = 'video-analyzer-'
-
-/**
- * Prefix of the payload files the Skill launcher stages for a Windows `.cmd`
- * shim. They hold media paths and questions, so a killed launcher must not leave
- * them behind indefinitely.
- */
-const LAUNCHER_PAYLOAD_PREFIX = 'video-analyzer-input-'
+const TEMP_PREFIX = 'video-analyzer-owned-'
+const OWNER_FILE = '.video-analyzer-owner.json'
 
 /** Create a per-request working directory under the OS temp directory. */
-export async function createTempDir(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), TEMP_PREFIX))
+export async function createTempDir(base = tmpdir()): Promise<string> {
+  const dir = await mkdtemp(path.join(base, TEMP_PREFIX))
+  try {
+    await writeFile(path.join(dir, OWNER_FILE), JSON.stringify({ version: 1, pid: process.pid }), {
+      flag: 'wx',
+      mode: 0o600,
+    })
+    return dir
+  } catch (error) {
+    await removeDir(dir)
+    throw error
+  }
 }
 
 /** Best-effort removal; report failures without masking the operation's error. */
@@ -34,16 +48,19 @@ export async function removeDir(
 }
 
 /**
- * Best-effort cleanup of temp directories and launcher payload files left behind
- * by a process that was killed mid-operation.
+ * Only marked directories owned by an exited process are candidates for cleanup.
+ * PID reuse or an inaccessible process conservatively keeps the directory.
  */
-export async function sweepStaleTempDirs(maxAgeMs = 24 * 60 * 60 * 1000): Promise<void> {
-  const base = tmpdir()
+export async function sweepStaleTempDirs(
+  options: { maxAgeMs?: number; base?: string; logger?: Logger } = {},
+): Promise<void> {
+  const { maxAgeMs = 24 * 60 * 60 * 1000, base = tmpdir(), logger = createLogger('warn') } = options
   let entries: string[]
   try {
     entries = await readdir(base)
-  } catch {
-    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
   }
 
   const cutoff = Date.now() - maxAgeMs
@@ -53,15 +70,35 @@ export async function sweepStaleTempDirs(maxAgeMs = 24 * 60 * 60 * 1000): Promis
       .map(async (entry) => {
         const full = path.join(base, entry)
         try {
-          const info = await stat(full)
-          if (info.mtimeMs >= cutoff) return
-          if (info.isDirectory()) {
-            await removeDir(full)
-          } else if (entry.startsWith(LAUNCHER_PAYLOAD_PREFIX) && entry.endsWith('.json')) {
-            await rm(full, { force: true }).catch(() => undefined)
+          const info = await lstat(full)
+          if (!info.isDirectory() || info.mtimeMs >= cutoff) return
+          if (typeof process.getuid === 'function' && info.uid !== process.getuid()) return
+          const marker = path.join(full, OWNER_FILE)
+          const markerInfo = await lstat(marker)
+          if (!markerInfo.isFile() || markerInfo.size > 1024) return
+          const owner: unknown = JSON.parse(await readFile(marker, 'utf8'))
+          if (
+            typeof owner !== 'object' ||
+            owner === null ||
+            !('version' in owner) ||
+            owner.version !== 1 ||
+            !('pid' in owner) ||
+            typeof owner.pid !== 'number' ||
+            !Number.isSafeInteger(owner.pid) ||
+            owner.pid <= 0
+          )
+            return
+          try {
+            process.kill(owner.pid, 0)
+            return
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return
           }
-        } catch {
-          // Ignore races with other processes.
+          await removeDir(full, logger)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError)
+            return
+          logger.warn(`Could not inspect temporary directory ${full}: ${String(error)}`)
         }
       }),
   )

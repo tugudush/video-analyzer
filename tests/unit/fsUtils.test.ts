@@ -1,10 +1,12 @@
-import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { link, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   canonicalPath,
+  createTempDir,
   isSameFile,
   removeDir,
   sweepStaleTempDirs,
@@ -133,36 +135,61 @@ describe('isSameFile', () => {
   })
 })
 
-/**
- * A killed Skill launcher leaves its staged JSON payload behind; that file holds
- * media paths and questions, so the sweep must not only look at directories.
- */
 describe('sweepStaleTempDirs', () => {
-  const base = tmpdir()
-  const stamp = `${process.pid}-${randomUUID().slice(0, 8)}`
-  const payload = path.join(base, `video-analyzer-input-${stamp}.json`)
-  const staleDir = path.join(base, `video-analyzer-sweep-${stamp}`)
-  const recentFile = path.join(base, `video-analyzer-input-${stamp}-recent.json`)
+  let base: string
 
-  afterEach(async () => {
-    await rm(payload, { force: true })
-    await rm(recentFile, { force: true })
-    await rm(staleDir, { recursive: true, force: true })
+  beforeEach(async () => {
+    base = await mkdtemp(path.join(tmpdir(), 'va-sweep-test-'))
   })
 
-  it('removes stale payload files and directories but keeps recent ones', async () => {
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+
+  it('removes only old marked directories whose owner has exited', async () => {
+    const child = spawn(process.execPath, ['-e', ''], { windowsHide: true })
+    const pid = child.pid
+    await once(child, 'exit')
+    if (pid === undefined) throw new Error('Child process did not start.')
+
+    const stale = await createTempDir(base)
+    const active = await createTempDir(base)
+    const recent = await createTempDir(base)
+    const unrelated = path.join(base, 'video-analyzer-owned-unrelated')
+    await mkdir(unrelated)
+    await writeFile(path.join(unrelated, 'important.txt'), 'keep')
+    await writeFile(
+      path.join(stale, '.video-analyzer-owner.json'),
+      JSON.stringify({ version: 1, pid }),
+    )
+    await writeFile(
+      path.join(recent, '.video-analyzer-owner.json'),
+      JSON.stringify({ version: 1, pid }),
+    )
+    await writeFile(path.join(stale, 'input.json'), 'private payload')
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000)
-    await writeFile(payload, '{}', 'utf8')
-    await writeFile(recentFile, '{}', 'utf8')
-    await mkdir(staleDir)
-    await utimes(payload, hourAgo, hourAgo)
-    await utimes(staleDir, hourAgo, hourAgo)
+    await Promise.all([stale, active, unrelated].map((dir) => utimes(dir, hourAgo, hourAgo)))
 
-    await sweepStaleTempDirs(60 * 1000)
+    await sweepStaleTempDirs({ maxAgeMs: 60 * 1000, base })
 
-    await expect(stat(payload)).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(stat(staleDir)).rejects.toMatchObject({ code: 'ENOENT' })
-    // A payload that may still belong to a running launcher is left alone.
-    await expect(stat(recentFile)).resolves.toBeDefined()
+    await expect(stat(stale)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(active)).resolves.toBeDefined()
+    await expect(stat(recent)).resolves.toBeDefined()
+    await expect(stat(path.join(unrelated, 'important.txt'))).resolves.toBeDefined()
+  })
+
+  it('leaves unmarked and malformed legacy entries untouched', async () => {
+    const legacy = path.join(base, 'video-analyzer-unrelated')
+    const malformed = path.join(base, 'video-analyzer-owned-malformed')
+    await mkdir(legacy)
+    await mkdir(malformed)
+    await writeFile(path.join(malformed, '.video-analyzer-owner.json'), '{}')
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000)
+    await Promise.all([legacy, malformed].map((dir) => utimes(dir, hourAgo, hourAgo)))
+
+    await sweepStaleTempDirs({ maxAgeMs: 60 * 1000, base })
+
+    await expect(stat(legacy)).resolves.toBeDefined()
+    await expect(stat(malformed)).resolves.toBeDefined()
   })
 })

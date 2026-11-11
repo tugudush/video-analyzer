@@ -4,7 +4,7 @@ import { loadConfig, type Config } from '../config.js'
 import { listOperations, requireOperation } from '../operations/registry.js'
 import { executeOperation, zodErrorToInvalidInput } from '../operations/execute.js'
 import { toResultEnvelope } from './envelope.js'
-import { createLogger } from '../utils/logger.js'
+import { createLogger, type Logger } from '../utils/logger.js'
 import {
   toErrorEnvelope,
   toVideoAnalyzerError,
@@ -217,10 +217,12 @@ let tempSweepStarted = false
  * The MCP server does this at startup; the CLI is usually short-lived, so it
  * sweeps once per process on the first operation instead.
  */
-function sweepTempDirsOnce(): void {
+function sweepTempDirsOnce(logger: Logger): void {
   if (tempSweepStarted) return
   tempSweepStarted = true
-  void sweepStaleTempDirs().catch(() => undefined)
+  void sweepStaleTempDirs({ logger }).catch((error: unknown) =>
+    logger.warn(`Could not scan temporary directories: ${String(error)}`),
+  )
 }
 
 /**
@@ -310,8 +312,8 @@ export async function runCli(
       throw error
     }
 
-    sweepTempDirsOnce()
     const logger = createLogger(config.logLevel)
+    sweepTempDirsOnce(logger)
     // Ctrl-C aborts the in-flight request instead of killing the process, so the
     // operation reports GEMINI_TIMEOUT and the envelope still reaches the caller.
     const controller = new AbortController()

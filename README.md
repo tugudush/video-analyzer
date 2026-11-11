@@ -292,13 +292,14 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Timestamps are estimates.** `search_timestamp` reflects Gemini's internal sampling. Confirm with `extract_frames` before cutting.
 - **Interval frame labels are approximate.** They describe the sampling grid, not the exact presentation times of the source frames.
 - **Requested frame times are not source timestamps.** Timestamp extraction selects the first frame at or after the requested time, or the last frame if the seek reaches the end. Labels and `data.timestamps` retain the requested times; the end-of-clip fallback can be slower.
+- **Multi-stream inputs use the first video stream.** Metadata and all frame extraction modes use the first video stream reported by ffprobe, even if a different stream is marked default.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
 - **Local AI inputs are uploaded each time.** Mutable local files are not cached or coalesced; identical direct downloads can reuse an upload based on their content.
 - **MCP inlines extracted frames.** `extract_frames` embeds JPEGs up to a 2 MiB base64 budget per call; frames that do not fit, including the first, are reported by path instead. Each inlined image is preceded by its path and label. The CLI returns paths only. Frames are capped at a 1280-pixel longest edge without upscaling.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
-- **Temporary cleanup is best-effort.** If removal fails, a warning names the directory so it can be deleted manually. Warnings follow `VIDEO_ANALYZER_LOG_LEVEL`; `silent` suppresses them.
+- **Temporary cleanup is best-effort.** If removal fails, a warning names the directory so it can be deleted manually. Warnings follow `VIDEO_ANALYZER_LOG_LEVEL`; `silent` suppresses them. Startup cleanup only removes old, marked directories whose owning process has exited. Older unmarked temporary files are left untouched and may need manual removal.
 - **Frame extraction writes to disk.** Each extraction persists frames and a paging manifest until you delete its `data.outputDir`. Later pages use `frameSetDir` and do not download or extract again. By default output goes into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
 
 ## Architecture

@@ -100,7 +100,9 @@ ffmpeg -i input.mkv -c:v libx264 -pix_fmt yuv420p -c:a aac output.mp4
 ## GEMINI_REQUEST_FAILED
 
 Check the key, the model ID in `GEMINI_MODEL`, quota, and network access. An empty
-response usually means the prompt was blocked by safety filters.
+response usually means the prompt was blocked by safety filters. If Gemini
+stopped before completing its answer, retry with a shorter input or request;
+partial text is not returned or written as a transcript.
 
 ## INVALID_INPUT
 

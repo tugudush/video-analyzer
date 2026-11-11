@@ -5,9 +5,17 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { transcribeVideoOperation } from '../../src/operations/transcribeVideo.js'
-import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
+import { GeminiMediaService, GoogleGenAiApi, type GeminiApi } from '../../src/services/gemini.js'
 import { createLogger } from '../../src/utils/logger.js'
 import type { OperationContext } from '../../src/operations/types.js'
+
+const sdk = vi.hoisted(() => ({ upload: vi.fn(), generateContent: vi.fn() }))
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: class {
+    files = { upload: sdk.upload }
+    models = { generateContent: sdk.generateContent }
+  },
+}))
 
 // ffprobe is not required for these tests: the operation only needs metadata,
 // and the alias/overwrite rules are unrelated to the probe result.
@@ -69,6 +77,34 @@ describe('transcribe_video output target', () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true })
+  })
+
+  it('does not replace a transcript when Gemini returns truncated text', async () => {
+    const target = path.join(dir, 'transcript.txt')
+    await writeFile(target, 'existing transcript')
+    sdk.upload.mockResolvedValueOnce({
+      name: 'files/abc',
+      uri: 'https://generativelanguage.test/v1beta/files/abc',
+      mimeType: 'video/mp4',
+      state: 'ACTIVE',
+    })
+    sdk.generateContent.mockResolvedValueOnce({
+      text: 'partial transcript',
+      candidates: [{ finishReason: 'MAX_TOKENS' }],
+    })
+    const service = new GeminiMediaService({
+      config: loadConfig({}),
+      logger: createLogger('silent'),
+      api: new GoogleGenAiApi('test'),
+    })
+
+    await expect(
+      transcribeVideoOperation.run(
+        { videoPath: source, outputPath: target, overwrite: true },
+        createContext(service),
+      ),
+    ).rejects.toMatchObject({ code: 'GEMINI_REQUEST_FAILED' })
+    expect(await readFile(target, 'utf8')).toBe('existing transcript')
   })
 
   it('refuses to write the transcript over the source media', async () => {

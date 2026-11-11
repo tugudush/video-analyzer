@@ -52,6 +52,68 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     expect(data.audio.codec).toBe('aac')
   })
 
+  it('uses the reported first video stream in every frame extraction mode', async () => {
+    const source = path.join(workDir, 'multiple-streams.mkv')
+    await execFileAsync(
+      FFMPEG,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=black:size=64x64:rate=5:duration=1',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=white:size=64x64:rate=5:duration=1',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=blue:size=128x128:rate=5:duration=2',
+        '-filter_complex',
+        '[0:v][1:v]concat=n=2:v=1:a=0[first]',
+        '-map',
+        '[first]',
+        '-map',
+        '2:v',
+        '-c:v',
+        'libx264',
+        '-disposition:v:0',
+        '0',
+        '-disposition:v:1',
+        'default',
+        source,
+      ],
+      { timeout: 60_000, windowsHide: true },
+    )
+    const metadata = await getMediaMetadata(source, config)
+    expect(metadata.video).toMatchObject({ width: 64, height: 64 })
+
+    const modes = [
+      { mode: 'even', count: 2 },
+      { mode: 'interval', intervalSec: 0.5 },
+      { mode: 'timestamps', timestamps: [0, 1.99] },
+      { mode: 'scene', sceneThreshold: 0.1 },
+    ] as const
+    for (const options of modes) {
+      const result = await executeOperation(
+        extractFramesOperation,
+        { videoPath: source, ...options },
+        config,
+      )
+      expect(result.images?.length).toBeGreaterThan(0)
+      for (const image of result.images ?? []) {
+        expect((await getMediaMetadata(image.path, config)).video).toMatchObject({
+          width: 64,
+          height: 64,
+        })
+      }
+    }
+  })
+
   it('accepts file:// URIs', async () => {
     const sample = await createSampleVideo(workDir)
     const url = new URL(`file://${sample.path.replace(/\\/g, '/')}`).href

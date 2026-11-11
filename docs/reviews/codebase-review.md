@@ -1,157 +1,53 @@
-# Codebase Review
+# Codebase review
 
-Reviewed: 2026-11-11
+Reviewed 2026-11-11 against commit `f3f28e7`. Scope: the shared operations, CLI and MCP adapters, media and Gemini services, filesystem/network helpers, documentation, and relevant tests. This is a risk-focused review, not a security certification.
 
-## Scope and assessment
+## Resolution
 
-Reviewed the current working tree across the CLI, MCP and Skill interfaces,
-operation registry, media resolution, FFmpeg and Gemini services, filesystem
-handling, and representative tests. This is a targeted codebase review, not an
-exhaustive security audit or production load test.
+All four findings below have been addressed. Startup cleanup now requires an application ownership marker and an exited owner process; older unmarked entries are intentionally left untouched. Gemini responses must finish normally before their text is returned or saved. Metadata and frame extraction consistently use the first video stream, and timestamp parsing preserves numeric descriptions.
 
-The shared registry, strict input validation, explicit cancellation, bounded
-downloads, and substantial unit and integration coverage are good foundations.
-The review identified incorrect frame selection or labels, reuse of stale
-uploaded media, and unbounded MCP image responses as the most important risks.
+After the fixes, `npm run check` passed: 276 tests passed and one Windows symlink test was skipped. Gemini completion handling was tested with simulated SDK responses, not a live provider.
 
-Priorities below describe impact and likelihood in normal use: P2 is a
-correctness or reliability issue worth addressing; P3 is a narrower usability
-or operational issue. The descriptions and evidence below refer to the code
-as originally reviewed; remediation status is recorded with each finding.
+## Original findings
 
-## Findings
+### P1 — Startup cleanup can delete unrelated directories
 
-### [Resolved] P2 — Timestamp extraction can select the wrong frame or fail near the end
+The original `sweepStaleTempDirs` in [`fsUtils.ts`](../../src/utils/fsUtils.ts) recursively removed every directory in the system temp root whose name started with `video-analyzer-` and whose directory mtime was older than 24 hours. The prefix was not proof of ownership or inactivity: an unrelated directory, or an active directory whose contents change without updating the directory mtime, could satisfy the test. The sweep runs on the first CLI operation and MCP startup ([CLI](../../src/adapters/cli.ts), [MCP](../../src/adapters/mcpServer.ts)).
 
-**Status: Resolved.** Labels identify requested times, every page warns that
-they are not source presentation times, and an end-of-clip fallback returns
-the final frame. Real-FFmpeg tests cover low frame rates and longer audio.
+**Evidence:** In an isolated temp root, a directory named `video-analyzer-unrelated-project` containing a file was removed after its directory mtime was set two days old.
 
-**Locations:** [ffmpeg.ts](../../src/services/ffmpeg.ts#L428),
-[extractFrames.ts](../../src/operations/extractFrames.ts#L214),
-[extractFrames.ts](../../src/operations/extractFrames.ts#L354).
+**Recommendation:** Restrict cleanup to a private, application-owned namespace with an ownership marker and a reliable liveness mechanism; never recursively delete an arbitrary prefix match. Add tests for unrelated matching directories and active work.
 
-The FFmpeg helper describes its result as the closest frame, but input seeking
-with `-ss` discards frames before the requested position. The operation then
-labels the result with the requested timestamp, not the selected frame's
-presentation time. If the requested time is after the last frame's timestamp
-but still inside the container duration, FFmpeg can produce no frame and fail
-the entire request, including any earlier valid timestamps.
+### P2 — Truncated Gemini output is accepted as complete
 
-**Evidence:** With a generated two-second, 2 fps video, the frame returned for
-`0.1` seconds had the same JPEG hash as the frame at `0.5`, not the frame at
-`0`. A request for `1.9` seconds passed duration validation but failed with
-`MEDIA_PROCESSING_FAILED`; `1.4` seconds succeeded. The existing
-[integration test](../../tests/integration/localMedia.test.ts#L98) checks
-returned request timestamps, not the selected source-frame identity or the
-last-frame boundary.
+The original `GoogleGenAiApi.generateContent` in [`gemini.ts`](../../src/services/gemini.ts) returned any nonempty `response.text` without checking the candidate's finish reason. If Gemini returned partial text with `MAX_TOKENS` or another abnormal finish, the operations presented it as a complete answer. In particular, [`transcribe_video`](../../src/operations/transcribeVideo.ts) could write the incomplete transcript to the requested file without a warning.
 
-**Recommendation:** Define whether timestamps mean nearest frame or first frame
-at/after the time, implement that policy including the tail of the clip, and
-return or clearly label actual versus requested times. Add real-FFmpeg tests
-with distinguishable low-frame-rate frames and a timestamp after the last
-frame but before the duration.
+**Evidence:** A simulated SDK response with text `partial transcript` and `finishReason: MAX_TOKENS` returned the text normally. The SDK exposes `MAX_TOKENS` as a candidate finish reason; no live Gemini call was made.
 
-### [Resolved] P2 — Local upload cache can reuse media after its contents change
+**Recommendation:** Preserve and inspect finish metadata at the SDK boundary. Fail explicitly or expose an unmistakable partial-result warning for non-complete responses, including before saving transcripts. Cover truncated and normal responses with SDK-boundary tests.
 
-**Status: Resolved.** Local files without a stable content identity are uploaded
-each time and are not coalesced. Direct downloads retain content-based reuse.
+### P2 — Metadata and frame extraction can select different video streams
 
-**Locations:** [gemini.ts](../../src/services/gemini.ts#L261),
-[shared.ts](../../src/operations/shared.ts#L98).
+`getMediaMetadata` in [`ffmpeg.ts`](../../src/services/ffmpeg.ts) reported the first video stream, but frame extraction invoked FFmpeg without explicitly mapping that stream. FFmpeg could select a different default stream. Users could therefore receive codec, dimensions, and frame rate for one stream while extracted frames came from another.
 
-Local upload identities use path, size, and modification time rounded to a
-millisecond. Two different same-size revisions with mtimes in the same rounded
-millisecond are treated as the same file. Preserved timestamps can produce the
-same collision even without rounding. A still-active cached Gemini file is
-then reused, so analysis or transcription can silently describe the previous
-contents.
+**Evidence:** A generated two-stream MKV with a 64×64 first stream and a 128×128 second stream marked default produced metadata reporting 64×64, but timestamp extraction produced a 128×128 frame.
 
-**Evidence:** In a local test with a fake Gemini API, a four-byte file was
-changed from `AAAA` to `BBBB`, with mtimes of approximately
-`1700000000123.1008` and `1700000000123.4` ms. Both calls returned the first
-upload, and the fake API observed only `AAAA`. No live Gemini call was made.
+**Recommendation:** Define a stream-selection policy and use the same selected stream for metadata and every extraction mode, or expose all streams and the one selected. Add a multi-stream integration fixture.
 
-**Recommendation:** Use a content-based identity, or an explicitly documented
-invalidation strategy that cannot silently reuse a different revision. Avoid
-discarding available timestamp precision, and add tests for same-size rewrites,
-including preserved and sub-millisecond mtimes.
+### P2 — Timestamp parser consumes numeric descriptions as end times
 
-### [Resolved] P2 — A saved frame set can bypass the MCP inline-image budget
+The original `parseTimestampMatches` in [`searchTimestamp.ts`](../../src/operations/searchTimestamp.ts) interpreted a number after a dash as a potential range end, even when it began the description. `MATCH 42 — 3 speakers appear` lost `3`; `MATCH 42 — 50 people enter` became a fabricated 42–50 second range and lost `50`. The original test expected the first loss.
 
-**Status: Resolved.** All frames, including the first, are subject to the 2 MiB
-base64 budget; reads are bounded even if a file grows after its size check.
+**Recommendation:** Disambiguate ranges from descriptions using a well-defined response format, preserve the complete description, and test numeric descriptions both below and above the starting timestamp.
 
-**Locations:** [extractFrames.ts](../../src/operations/extractFrames.ts#L107),
-[extractFrames.ts](../../src/operations/extractFrames.ts#L138),
-[envelope.ts](../../src/adapters/envelope.ts#L79).
+## Validation and coverage
 
-Paging accepts a caller-supplied frame-set directory and checks that each file
-is nonempty, but not its size or image contents. `loadImages` intentionally
-always reads and inlines the first file, regardless of the advertised 2 MiB
-base64 budget. An oversized or modified saved frame can therefore cause a large
-memory allocation and an oversized MCP response, potentially failing the
-transport or client. This is distinct from the documented normal-frame
-exception: a saved file has no enforced upper bound.
+- `npm run typecheck`, `npm run lint`, `npm test`, and `npm run format:check` passed on Windows with Node 26 and FFmpeg available.
+- The test run reported 268 passed and one skipped test; the skipped Windows symlink case requires privileges. FFmpeg integration tests ran.
+- The cleanup, timestamp parsing, and multi-stream findings were reproduced locally with isolated fixtures. The Gemini finish-reason case used a simulated SDK response; live provider behavior and credentials were not tested.
 
-**Evidence:** A synthetic saved frame set with one 3 MiB file produced a
-4 MiB base64 image in the MCP tool result. The test did not require a valid
-JPEG, because the paging path accepts any nonempty regular file.
+## Strengths and remaining limitations
 
-**Recommendation:** Enforce a hard per-image limit before reading, including
-the first image, and report oversized images by path or with a clear error.
-Bound the read itself against file changes between the size check and read.
-Test oversized first images and modified frame sets.
-
-### [Resolved] P3 — MCP drops labels and paths for inlined frames
-
-**Status: Resolved.** Each inlined image is preceded by its path and label;
-skipped images retain their path and label in the result.
-
-**Locations:** [extractFrames.ts](../../src/operations/extractFrames.ts#L138),
-[mcpTools.ts](../../src/adapters/mcpTools.ts#L24).
-
-The operation creates a path and timestamp label for each image, but the MCP
-adapter emits only the image bytes and MIME type for inlined images. Its
-separate data block contains the page's timestamps, while only skipped images
-are described by path and label. When some images are skipped, clients must
-infer which remaining image corresponds to which timestamp instead of receiving
-an explicit mapping. The CLI retains the image metadata.
-
-**Recommendation:** Include an ordered text or structured mapping for every
-inlined and skipped image, preserving the path and label next to its content.
-Cover a page where a middle image is skipped but a later image fits.
-
-### [Resolved] P3 — Temporary-media cleanup failures are invisible
-
-**Status: Resolved.** Removal failures are logged with the directory and
-manual-cleanup guidance without replacing the original operation error.
-
-**Locations:** [fsUtils.ts](../../src/utils/fsUtils.ts#L21),
-[mediaInput.ts](../../src/services/mediaInput.ts#L134),
-[getVideoInfo.ts](../../src/operations/getVideoInfo.ts#L74).
-
-`removeDir` suppresses every removal error, not just an already-missing
-directory. Consequently, a successful operation can leave a downloaded copy
-of sensitive media on disk without warning when deletion fails. Startup
-sweeping is also best-effort, so it does not guarantee eventual removal.
-
-**Recommendation:** Surface a cleanup warning or log for failures other than an
-already-removed directory, without masking an original operation error. Add a
-test for failed removal and document the residual-file recovery path.
-
-## Verification and limitations
-
-- Remediation tests cover preserved-mtime rewrites, concurrent uncached uploads,
-  timestamp boundaries, longer audio, frame-page labels, oversized and growing
-  MCP images, and failed cleanup.
-- Before remediation, `npm run check` passed with 262 tests passed and one
-  skipped; all 20 local-media integration tests ran.
-- After remediation, `npm run check` passed with 268 tests passed and one
-  skipped; all 22 local-media integration tests ran.
-- The skipped test requires Windows file-symlink creation privileges.
-- Reproductions used Node 26.11.1, FFmpeg 9.0.2, generated media, a fake Gemini
-  API, and synthetic frame-set files. Temporary reproduction files were removed.
-- No live Gemini call or production-scale load test was performed. The
-  [README](../../README.md#known-limitations) already documents the DNS
-  resolve-to-connect rebinding limitation; it remains a deployment risk.
+- A shared registry and execution path support CLI/MCP parity, and the suite covers local media, cancellation, frame paging, and upload reuse.
+- Remote downloads validate redirects and enforce size limits. As the README notes, DNS resolution is not pinned to the connection, so this is best-effort SSRF protection rather than a complete network boundary.
+- Gemini output remains model-generated and timestamp estimates need independent verification. Automated tests with mocked provider responses do not establish live model quality or provider compatibility.

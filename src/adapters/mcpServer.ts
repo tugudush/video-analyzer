@@ -86,7 +86,9 @@ export function createMcpServer(config: Config): McpServerHandle {
   return {
     server,
     async start() {
-      sweepStaleTempDirs().catch(() => undefined)
+      void sweepStaleTempDirs({ logger }).catch((error: unknown) =>
+        logger.warn(`Could not scan temporary directories: ${String(error)}`),
+      )
       const transport = new StdioServerTransport()
       await server.connect(transport)
       logger.info(`${SERVER_NAME} MCP server ready (model: ${config.geminiModel}).`)

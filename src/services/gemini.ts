@@ -145,6 +145,17 @@ export class GoogleGenAiApi implements GeminiApi {
         hint: 'The prompt may have been blocked by safety filters, or the response was truncated.',
       })
     }
+    const finishReason = response.candidates?.[0]?.finishReason
+    if (finishReason !== 'STOP') {
+      throw new VideoAnalyzerError(
+        'GEMINI_REQUEST_FAILED',
+        'Gemini did not complete its response.',
+        {
+          hint: 'Retry with a shorter input or request. The partial response was not returned or saved.',
+          details: { finishReason: finishReason ?? 'UNSPECIFIED' },
+        },
+      )
+    }
     return text
   }
 }

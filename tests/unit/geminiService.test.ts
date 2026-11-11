@@ -5,10 +5,47 @@ import path from 'node:path'
 import { loadConfig } from '../../src/config.js'
 import {
   GeminiMediaService,
+  GoogleGenAiApi,
   type GeminiApi,
   type GeminiFileHandle,
 } from '../../src/services/gemini.js'
 import { createLogger } from '../../src/utils/logger.js'
+
+const sdk = vi.hoisted(() => ({ generateContent: vi.fn() }))
+
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: class {
+    models = { generateContent: sdk.generateContent }
+  },
+}))
+
+describe('GoogleGenAiApi response completion', () => {
+  const params = { model: 'test', parts: [{ kind: 'text' as const, text: 'transcribe' }] }
+
+  it('returns a normally completed response', async () => {
+    sdk.generateContent.mockResolvedValueOnce({
+      text: 'complete transcript',
+      candidates: [{ finishReason: 'STOP' }],
+    })
+    await expect(new GoogleGenAiApi('test').generateContent(params)).resolves.toBe(
+      'complete transcript',
+    )
+  })
+
+  it.each(['MAX_TOKENS', 'SAFETY', undefined])(
+    'rejects partial text with finish reason %s',
+    async (finishReason) => {
+      sdk.generateContent.mockResolvedValueOnce({
+        text: 'partial transcript',
+        candidates: [{ finishReason }],
+      })
+      await expect(new GoogleGenAiApi('test').generateContent(params)).rejects.toMatchObject({
+        code: 'GEMINI_REQUEST_FAILED',
+        details: { finishReason: finishReason ?? 'UNSPECIFIED' },
+      })
+    },
+  )
+})
 
 function handle(overrides: Partial<GeminiFileHandle> = {}): GeminiFileHandle {
   return {

@@ -167,6 +167,8 @@ node ./scripts/invoke.mjs get_video_info '{"videoPath":"./demo.mp4"}'
 `audio{codec,sampleRate,channels}`.
 
 Use this first when you need duration or dimensions to plan frames.
+For media with multiple video streams, the metadata and every frame extraction
+mode use the first video stream, even if a different stream is marked default.
 
 ---
 

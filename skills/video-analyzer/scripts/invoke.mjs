@@ -14,8 +14,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,27 +139,33 @@ if (payloadFile) {
  */
 const { command, baseArgs } = await resolveInvocation()
 const viaComSpec = isBatchShim(command)
-let payloadTempFile
+let payloadTempDir
 
 async function cleanupPayload() {
-  if (!payloadTempFile) return
-  const staging = payloadTempFile
-  payloadTempFile = undefined
-  await rm(staging, { force: true }).catch(() => undefined)
+  if (!payloadTempDir) return
+  const staging = payloadTempDir
+  payloadTempDir = undefined
+  await rm(staging, { recursive: true, force: true }).catch((error) => {
+    process.stderr.write(`Could not remove temporary directory ${staging}: ${error.message}\n`)
+  })
 }
 
 if (payload !== undefined) {
   if (viaComSpec) {
-    payloadTempFile = path.join(
-      tmpdir(),
-      `video-analyzer-input-${process.pid}-${randomUUID()}.json`,
-    )
     try {
-      await writeFile(payloadTempFile, payload, 'utf8')
+      payloadTempDir = await mkdtemp(path.join(tmpdir(), 'video-analyzer-owned-'))
+      await writeFile(
+        path.join(payloadTempDir, '.video-analyzer-owner.json'),
+        JSON.stringify({ version: 1, pid: process.pid }),
+        { flag: 'wx', mode: 0o600 },
+      )
+      const payloadTempFile = path.join(payloadTempDir, 'input.json')
+      await writeFile(payloadTempFile, payload, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      forwarded.push('--input-file', payloadTempFile)
     } catch (error) {
+      await cleanupPayload()
       await fail('OUTPUT_FAILED', 'Could not stage the JSON payload for the CLI.', error.message)
     }
-    forwarded.push('--input-file', payloadTempFile)
   } else {
     forwarded.push('--input', payload)
   }

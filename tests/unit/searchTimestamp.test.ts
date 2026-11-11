@@ -70,14 +70,16 @@ describe('parseTimestampMatches', () => {
     expect(parseTimestampMatches('MATCH 3')[0]?.description).toBe('No description provided.')
   })
 
-  /**
-   * A description that starts with a number parses as the end of a range, which
-   * must not be surfaced as an inverted span ("42 – 3") to the caller.
-   */
-  it('drops an end that is not after the start', () => {
+  it('preserves numeric descriptions instead of inventing an end timestamp', () => {
     expect(parseTimestampMatches('MATCH 42 — 3 speakers appear on screen')).toEqual([
-      { startSeconds: 42, description: 'speakers appear on screen' },
+      { startSeconds: 42, description: '3 speakers appear on screen' },
     ])
+    expect(parseTimestampMatches('MATCH 42 — 50 people enter')).toEqual([
+      { startSeconds: 42, description: '50 people enter' },
+    ])
+  })
+
+  it('drops an end that is not after the start', () => {
     expect(parseTimestampMatches('MATCH 10 to 5 — backwards range')[0]?.endSeconds).toBeUndefined()
     expect(parseTimestampMatches('MATCH 7 7 — zero length')[0]?.endSeconds).toBeUndefined()
   })

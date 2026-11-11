@@ -39,9 +39,13 @@ export function parseTimestampMatches(text: string): TimestampMatch[] {
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim()
-    const match = line.match(
-      /^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)(?:\s*(?:-|–|—|to)\s*|\s+)(\d+(?:\.\d+)?)\s*(?:[-–—:]\s*)?(.*)$/i,
-    )
+    const match =
+      line.match(
+        /^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(?=\s|[-–—:]|$)\s*(?:[-–—:]\s*)?(.*)$/i,
+      ) ??
+      line.match(
+        /^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*[-–—:]\s*(.*)$/i,
+      )
     if (!match) {
       const single = line.match(/^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)\s*(?:[-–—:]\s*)?(.*)$/i)
       if (single) {
@@ -64,9 +68,6 @@ export function parseTimestampMatches(text: string): TimestampMatch[] {
 
     matches.push({
       startSeconds: start,
-      // An end at or before the start is not a range. A description that itself
-      // begins with a number ("MATCH 42 — 3 speakers appear") parses as an end,
-      // and reporting 42–3 would be worse than reporting 42 alone.
       ...(end !== undefined && Number.isFinite(end) && end > start ? { endSeconds: end } : {}),
       description: description || 'No description provided.',
     })
