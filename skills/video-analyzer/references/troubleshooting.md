@@ -12,7 +12,6 @@ cloud API, switch to a local operation:
 
 - `get_video_info`
 - `extract_frames`
-- `redact_sensitive` with `detectionMode: "manual"`
 
 ## DEPENDENCY_MISSING
 
@@ -40,7 +39,6 @@ Cause and fix:
 | Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`)    |
 | Empty file                           | Re-export or re-download the media                                           |
 | Frame extraction on audio-only input | Use `transcribe_video` instead                                               |
-| No video stream for redaction        | Redaction needs a video track                                                |
 | Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                   |
 | URL did not return media             | Use a direct media URL or a local file; platform page downloads are disabled |
 
@@ -87,11 +85,6 @@ ffmpeg -i input.mkv -c:v libx264 -pix_fmt yuv420p -c:a aac output.mp4
 Check the key, the model ID in `GEMINI_MODEL`, quota, and network access. An empty
 response usually means the prompt was blocked by safety filters.
 
-## CONSENT_REQUIRED
-
-`detectionMode: "ai"` uploads frames to Google. Ask the user for permission, then
-retry with `allowRemoteAnalysis: true`. Otherwise supply explicit regions.
-
 ## INVALID_INPUT
 
 The JSON did not match the schema. Run:
@@ -100,9 +93,8 @@ The JSON did not match the schema. Run:
 node ./scripts/invoke.mjs help <operation>
 ```
 
-to print the JSON Schema. Common causes: passing numbers as strings, using
-`timestamps` without `mode: "timestamps"`, or omitting `regions` in manual
-redaction mode.
+to print the JSON Schema. Common causes: passing numbers as strings or using
+`timestamps` without `mode: "timestamps"`.
 
 ## MEDIA_PROCESSING_FAILED
 
@@ -125,5 +117,3 @@ export VIDEO_ANALYZER_CLI_PATH=/path/to/video-analyzer/dist/cli.js
   `extract_frames` at nearby times before trusting a cut.
 - **Transcript is rough:** Gemini transcription is plain text with no diarization.
   Use a dedicated speech-to-text service if that is required.
-- **Blur missed content:** the region was too small or the content moved. Widen the
-  region, or add several regions with time windows.

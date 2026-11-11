@@ -2,7 +2,7 @@ import type { z } from 'zod'
 import type { Config } from '../config.js'
 import type { Logger } from '../utils/logger.js'
 
-/** A file the caller may keep (transcript, redacted video, extracted frames). */
+/** A file the caller may keep (transcript, extracted frames). */
 export interface Artifact {
   path: string
   kind: 'transcript' | 'video' | 'frame' | 'metadata'
@@ -47,7 +47,7 @@ export interface Operation<Schema extends z.ZodTypeAny = z.ZodTypeAny> {
   description: string
   inputSchema: Schema
   /** Capability hints used by the operation-selection guidance in the Skill. */
-  category: 'analysis' | 'local' | 'editing'
+  category: 'analysis' | 'local'
   requiresGemini: boolean
   run(input: z.infer<Schema>, ctx: OperationContext): Promise<OperationResult>
 }

@@ -1,11 +1,10 @@
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises'
+import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import { getVideoInfoOperation } from '../../src/operations/getVideoInfo.js'
 import { extractFramesOperation } from '../../src/operations/extractFrames.js'
-import { redactSensitiveOperation } from '../../src/operations/redactSensitive.js'
 import { executeOperation } from '../../src/operations/execute.js'
 import { createLogger } from '../../src/utils/logger.js'
 import { createSampleAudio, createSampleVideo, ffmpegAvailable } from '../helpers/media.js'
@@ -124,110 +123,6 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     for (const image of result.images ?? []) {
       expect((await stat(image.path)).size).toBeGreaterThan(0)
     }
-  })
-
-  it('renders a redacted video with a time window', async () => {
-    const sample = await createSampleVideo(workDir)
-    const outputPath = path.join(workDir, 'out', 'redacted.mp4')
-
-    const result = await executeOperation(
-      redactSensitiveOperation,
-      {
-        videoPath: sample.path,
-        effect: 'blur',
-        regions: [{ x: 10, y: 10, width: 80, height: 60, startTime: 0, endTime: 2 }],
-        outputPath,
-      },
-      config,
-    )
-
-    expect(result.artifacts?.[0]?.path).toBe(outputPath)
-    const info = await stat(outputPath)
-    expect(info.size).toBeGreaterThan(0)
-
-    // The rendered file must still be readable media.
-    const metadata = await executeOperation(
-      getVideoInfoOperation,
-      { videoPath: outputPath },
-      config,
-    )
-    expect(metadata.data).toMatchObject({ hasVideo: true })
-  })
-
-  it('supports pixelate and blackout effects', async () => {
-    const sample = await createSampleVideo(workDir)
-
-    for (const effect of ['pixelate', 'blackout'] as const) {
-      const outputPath = path.join(workDir, `out-${effect}`, `${effect}.mp4`)
-      const result = await executeOperation(
-        redactSensitiveOperation,
-        {
-          videoPath: sample.path,
-          effect,
-          regions: [{ x: 0, y: 0, width: 60, height: 40 }],
-          outputPath,
-        },
-        config,
-      )
-      expect(result.data).toMatchObject({ effect, previewOnly: false })
-      expect((await stat(outputPath)).size).toBeGreaterThan(0)
-    }
-  })
-
-  it('returns preview frames instead of rendering when previewOnly is set', async () => {
-    const sample = await createSampleVideo(workDir)
-
-    const result = await executeOperation(
-      redactSensitiveOperation,
-      {
-        videoPath: sample.path,
-        regions: [{ x: 5, y: 5, width: 50, height: 50 }],
-        previewOnly: true,
-      },
-      config,
-    )
-
-    expect(result.data).toMatchObject({ previewOnly: true })
-    expect(result.images?.length).toBeGreaterThan(0)
-    const previewDir = (result.data as { previewDir: string }).previewDir
-    const entries = await readdir(previewDir)
-    expect(entries.length).toBeGreaterThan(0)
-  })
-
-  it('refuses to overwrite the source video', async () => {
-    const sample = await createSampleVideo(workDir)
-
-    await expect(
-      executeOperation(
-        redactSensitiveOperation,
-        {
-          videoPath: sample.path,
-          regions: [{ x: 0, y: 0, width: 40, height: 40 }],
-          outputPath: sample.path,
-        },
-        config,
-      ),
-    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
-  })
-
-  it('requires at least one region in manual mode', async () => {
-    const sample = await createSampleVideo(workDir)
-
-    await expect(
-      executeOperation(redactSensitiveOperation, { videoPath: sample.path }, config),
-    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
-  })
-
-  it('requires consent before AI detection', async () => {
-    const sample = await createSampleVideo(workDir)
-
-    await expect(
-      executeOperation(
-        redactSensitiveOperation,
-        { videoPath: sample.path, detectionMode: 'ai' },
-        config,
-      ),
-    ).rejects.toMatchObject({ code: 'CONSENT_REQUIRED' })
   })
 
   it('uses the configured logger and progress hook', async () => {

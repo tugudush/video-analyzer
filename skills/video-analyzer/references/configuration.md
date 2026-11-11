@@ -58,13 +58,13 @@ reaching the CLI.
 
 ## Required for AI operations
 
-| Variable         | Purpose                                                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GEMINI_API_KEY` | Gemini API key. Required by `analyze_video`, `summarize_video`, `search_timestamp`, `transcribe_video`, and `redact_sensitive` when `detectionMode` is `ai`. |
+| Variable         | Purpose                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GEMINI_API_KEY` | Gemini API key. Required by `analyze_video`, `summarize_video`, `search_timestamp`, and `transcribe_video`. |
 
 Get a key from <https://aistudio.google.com/app/apikey>.
 
-Local operations (`get_video_info`, `extract_frames`, manual `redact_sensitive`)
+Local operations (`get_video_info`, `extract_frames`)
 work without it.
 
 ## Model
@@ -88,9 +88,9 @@ verbatim. No silent model substitution happens.
 
 ## Output
 
-| Variable                    | Default           | Purpose                                                                                              |
-| --------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_OUTPUT_DIR` | current directory | Base directory for `video-analyzer-output/` folders that hold frames, previews, and redacted videos. |
+| Variable                    | Default           | Purpose                                                                         |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_OUTPUT_DIR` | current directory | Base directory for `video-analyzer-output/` folders that hold extracted frames. |
 
 ## Binaries
 

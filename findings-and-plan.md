@@ -16,7 +16,7 @@ Both interfaces are first-class options over one shared application core. The Sk
 Additional constraints:
 
 - Use **Gemini as the only AI provider** for both video understanding and audio transcription.
-- Keep local media utilities where they add value: metadata, frame extraction, downloading, and redaction.
+- Keep local media utilities where they add value: metadata, frame extraction, and downloading.
 - Exclude all generative-media features.
 - Make all retained capabilities available without a license key, license validation, or a licensing service.
 - Prefer a direct, single-provider pipeline over the reference project's provider-routing and fallback machinery.
@@ -28,7 +28,7 @@ The result should be a new lean TypeScript project, not a copy of the reference 
 The reference currently combines two different products in one server:
 
 1. Video/audio analysis: question answering, summaries, timestamp search, transcription, metadata, and frame extraction.
-2. Media creation/editing: text-to-speech, image/video/music generation, asynchronous generation-task polling, and sensitive-region redaction.
+2. Media creation: text-to-speech, image/video/music generation, and asynchronous generation-task polling.
 
 Its analysis architecture is layered as MCP tools → provider orchestrator → provider clients → shared utilities. That separation is useful, but much of the orchestration exists only to support multiple providers and their different file-size, frame, audio, and URL constraints.
 
@@ -38,7 +38,7 @@ Important reference behavior to preserve:
 - A typical AI request is: resolve input locally → upload → wait until `ACTIVE` → send the file URI and prompt to Gemini.
 - Gemini processes video audio natively, so transcript injection into analysis prompts is unnecessary.
 - Repeated Gemini upload/processing logic should be centralized rather than duplicated in each tool.
-- ffmpeg/ffprobe remain useful for local metadata, frame extraction, and redaction rendering.
+- ffmpeg/ffprobe remain useful for local metadata and frame extraction.
 - yt-dlp provides platform URL support; direct HTTP(S) media URLs use a normal download path.
 - Temporary downloads and extracted media must be cleaned up in `finally` blocks.
 
@@ -69,17 +69,14 @@ The Skill is an instruction package, not a standalone AI model. Its bundled scri
 
 Keep the established analysis-operation names for familiarity, but remove every `provider` parameter. MCP exposes these names as tools; the Skill exposes the same names as CLI subcommands.
 
-| Operation          | Planned behavior                                                                                                                             | AI required     |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `analyze_video`    | Answer a caller-supplied question about the complete video, including its audio.                                                             | Gemini          |
-| `summarize_video`  | Produce an overview, key moments with approximate timestamps where supported, important dialogue/text/audio cues, and tone.                  | Gemini          |
-| `search_timestamp` | Locate matching event(s), return all plausible timestamps, and clearly state uncertainty or no match.                                        | Gemini          |
-| `transcribe_video` | Transcribe spoken audio from an uploaded video/audio file; optionally honor language and translation instructions.                           | Gemini          |
-| `get_video_info`   | Return duration, dimensions, frame rate, codecs, size, and container metadata.                                                               | No              |
-| `extract_frames`   | Extract frames by even count, interval, explicit timestamps, or scene changes, with bounded pagination.                                      | No              |
-| `redact_sensitive` | Blur, pixelate, or black out explicitly supplied regions; optionally use Gemini to identify sensitive regions before local ffmpeg rendering. | Optional Gemini |
-
-Redaction is retained because it is analysis-assisted local editing, not generative media. Manual redaction must work without a Gemini key. AI-assisted detection must require explicit caller consent before uploading a potentially sensitive video.
+| Operation          | Planned behavior                                                                                                            | AI required |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `analyze_video`    | Answer a caller-supplied question about the complete video, including its audio.                                            | Gemini      |
+| `summarize_video`  | Produce an overview, key moments with approximate timestamps where supported, important dialogue/text/audio cues, and tone. | Gemini      |
+| `search_timestamp` | Locate matching event(s), return all plausible timestamps, and clearly state uncertainty or no match.                       | Gemini      |
+| `transcribe_video` | Transcribe spoken audio from an uploaded video/audio file; optionally honor language and translation instructions.          | Gemini      |
+| `get_video_info`   | Return duration, dimensions, frame rate, codecs, size, and container metadata.                                              | No          |
+| `extract_frames`   | Extract frames by even count, interval, explicit timestamps, or scene changes, with bounded pagination.                     | No          |
 
 ### Former-Pro behavior, now standard
 
@@ -87,7 +84,6 @@ Redaction is retained because it is analysis-assisted local editing, not generat
 - Platform downloads are not restricted to YouTube; support whatever the installed yt-dlp build can lawfully access.
 - No artificial 720p download cap. Allow configurable resolution selection without a license check.
 - No 50-frame free-tier ceiling. Default AI-assisted sampling to 100 frames where frame sampling is needed; allow explicit limits and `0` for uncapped sampling, while retaining memory, output-size, and execution-time safeguards.
-- Redaction is available without a license.
 - Google API quotas, model limits, file expiry, and billing still apply; “unlocked” does not mean unlimited external service usage.
 
 ### Explicitly excluded
@@ -146,7 +142,7 @@ Use one documented input mechanism consistently: a JSON argument for simple call
 
 Successful CLI responses use an envelope such as `{ "ok": true, "operation": "...", "result": ..., "warnings": [] }`; failures use nonzero exit status and `{ "ok": false, "error": { "code": "...", "message": "..." } }`. Keep stdout machine-readable in both cases.
 
-Frame and redaction outputs must be written to explicit or managed output locations that survive the call. Return artifact paths and MIME types in the CLI envelope; the MCP adapter may embed image content from those files. Clean temporary inputs without deleting returned artifacts prematurely.
+Frame outputs must be written to explicit or managed output locations that survive the call. Return artifact paths and MIME types in the CLI envelope; the MCP adapter may embed image content from those files. Clean temporary inputs without deleting returned artifacts prematurely.
 
 ### 4.3 Single Gemini media pipeline
 
@@ -181,7 +177,7 @@ There is no alternative-provider attempt after a Gemini error. Retry only transi
 - Keep downloaded files in per-request temporary directories and remove them on success and failure.
 - Never log API keys, cookies, signed URL query strings, or media contents. Keep stdout reserved for MCP; diagnostics go to stderr or MCP logging.
 - Bound frame counts in normal requests, image response sizes, pagination, concurrency, and subprocess execution time. Uncapped mode removes the license ceiling, not basic resource safety.
-- Treat Skill instructions as workflow guidance, not a security boundary. The core/CLI must enforce validation, remote-upload consent, path safety, and resource limits even when invoked outside MCP.
+- Treat Skill instructions as workflow guidance, not a security boundary. The core/CLI must enforce validation, path safety, and resource limits even when invoked outside MCP.
 - Do not interpolate untrusted media paths, URLs, questions, or model responses into shell commands. Use the typed CLI and argument arrays throughout.
 
 ### 4.6 Agent Skill package
@@ -199,9 +195,9 @@ skills/video-analyzer/
     invoke.mjs               Locates the CLI and forwards JSON safely
 ```
 
-- `SKILL.md` uses valid frontmatter (`name: video-analyzer`, a keyword-rich description covering video analysis, summaries, transcription, timestamp search, metadata, frame extraction, and redaction).
+- `SKILL.md` uses valid frontmatter (`name: video-analyzer`, a keyword-rich description covering video analysis, summaries, transcription, timestamp search, metadata, and frame extraction).
 - Keep the main instructions below 500 lines and progressively load detailed operation references only when needed.
-- Include explicit operation-selection rules and examples: question → `analyze_video`, overview → `summarize_video`, exact event time → `search_timestamp`, speech → `transcribe_video`, technical details → `get_video_info`, images → `extract_frames`, and hiding regions → `redact_sensitive`.
+- Include explicit operation-selection rules and examples: question → `analyze_video`, overview → `summarize_video`, exact event time → `search_timestamp`, speech → `transcribe_video`, technical details → `get_video_info`, images → `extract_frames`.
 - Instruct the agent to run the packaged launcher without a shell, pass structured JSON, inspect the response envelope, and report warnings/uncertainty rather than inventing results.
 - The launcher resolves an explicitly configured CLI or the package's installed runtime and fails with actionable setup guidance when Node.js, FFmpeg, yt-dlp, or the Gemini key is missing. It must not silently download executables or dependencies.
 - Publish a portable Skill archive/directory for `.github/skills/video-analyzer/` (project) or `~/.copilot/skills/video-analyzer/` (personal). Avoid duplicating Skill copies across `.agents`, `.claude`, and other locations unless packaging for those clients is explicitly requested.
@@ -253,7 +249,6 @@ src/
     transcribeVideo.ts
     getVideoInfo.ts
     extractFrames.ts
-    redactSensitive.ts
   adapters/
     mcp.ts                  Registry-to-MCP registration/content mapping
     cli.ts                  JSON parsing and stable CLI response mapping
@@ -261,7 +256,7 @@ src/
     geminiClient.ts         Thin SDK wrapper
     geminiMedia.ts          Shared upload, poll, reuse, and inference flow
     mediaInput.ts           Local/URL/platform resolution and validation
-    ffmpeg.ts               Metadata, frames, and redaction rendering
+    ffmpeg.ts               Metadata and frame extraction
     fileCache.ts            Bounded Gemini file-reference cache
   utils/
     errors.ts               Safe, actionable interface-neutral errors
@@ -326,15 +321,7 @@ This layout is illustrative, not a request to create these files now. Avoid intr
 
 **Exit:** Transcription works for both audio-bearing video and supported audio files, with no audio-provider router or prompt-injection path.
 
-### Phase 6 — Unlocked redaction
-
-- Implement manual regions and local blur/pixelate/blackout rendering.
-- Add optional Gemini-assisted sensitive-region detection with explicit remote-upload consent and robust coordinate validation.
-- Keep preview and output paths safe; never overwrite the source by default.
-
-**Exit:** Manual redaction works offline, assisted redaction uses Gemini only, and no license check exists.
-
-### Phase 7 — Agent Skill
+### Phase 6 — Agent Skill
 
 - Author the `video-analyzer` Skill with discoverable frontmatter, concise selection guidance, and progressive operation references.
 - Implement and test the safe CLI launcher, runtime discovery, JSON forwarding, error handling, and returned-artifact handling.
@@ -343,7 +330,7 @@ This layout is illustrative, not a request to create these files now. Avoid intr
 
 **Exit:** A Skill-only installation can perform every approved operation with no MCP configuration or running MCP server, and returned artifacts remain usable.
 
-### Phase 8 — Verification and documentation
+### Phase 7 — Verification and documentation
 
 - Complete unit, integration, CLI, MCP protocol, Skill, parity, and opt-in live Gemini tests.
 - Document separate **Use as MCP** and **Use as Skill** setup paths, shared prerequisites, all operation contracts, quotas, privacy, and model limitations.
@@ -359,7 +346,7 @@ This layout is illustrative, not a request to create these files now. Avoid intr
 - Gemini upload → poll → prompt contracts using mocked SDK responses.
 - Immediate `ACTIVE`, delayed `ACTIVE`, `FAILED`, timeout, expired cache, and concurrent-call cases.
 - Temporary-file cleanup after success, API failure, subprocess failure, and invalid input.
-- ffmpeg argument construction, frame pagination, metadata parsing, and redaction geometry.
+- ffmpeg argument construction, frame pagination, and metadata parsing.
 - MCP stdio smoke test covering tool discovery and representative calls.
 - CLI contract tests for JSON input, stdout/stderr separation, exit codes, Windows paths, artifact survival, and machine-readable errors.
 - Skill frontmatter/discovery, launcher safety, operation-selection fixtures, and a Skill-only end-to-end run with MCP unavailable.
@@ -367,14 +354,14 @@ This layout is illustrative, not a request to create these files now. Avoid intr
 
 ### Final acceptance
 
-- Exactly the seven approved operations are discoverable through MCP, CLI, and Skill guidance; no generation operations are present.
+- Exactly the six approved operations are discoverable through MCP, CLI, and Skill guidance; no generation operations are present.
 - The project can be used **either as MCP or as a Skill**, with no requirement to install/configure the other interface.
 - Both interfaces invoke the same core handlers; Skill operation instructions do not duplicate implementation logic.
 - Every AI operation uses Gemini; no alternate provider package, key, parameter, or fallback exists.
 - No license key, Pro check, payment service, feature-tier notice, or licensing backend exists.
 - Platform and resolution behavior has no artificial license restriction.
 - Video analysis and transcription share one native Gemini media path.
-- Local metadata/frame/manual-redaction operations work without an API key through either interface.
+- Local metadata/frame operations work without an API key through either interface.
 - No media-generation capability can be reached through a hidden generic endpoint.
 - Temporary files and secrets are handled safely on Windows, and returned Skill/CLI artifacts are not prematurely deleted.
 - Build, type-check, lint, unit tests, integration tests, CLI/MCP parity tests, Skill tests, and MCP smoke tests pass; live tests are explicitly opt-in.
@@ -385,7 +372,7 @@ This layout is illustrative, not a request to create these files now. Avoid intr
 - **Native Gemini sampling:** Fast visual events and exact timestamps may be missed. Frame extraction remains available for targeted inspection.
 - **Transcription fidelity:** Gemini-only transcription may not match dedicated services for diarization or word-level timestamps.
 - **Unlocked resources:** Removing artificial caps increases possible download size, API cost, memory use, and latency; configurable safety limits remain necessary.
-- **Sensitive uploads:** AI-assisted analysis/redaction sends media to Google. This must be explicit in tool descriptions and documentation.
+- **Sensitive uploads:** AI-assisted analysis sends media to Google. This must be explicit in tool descriptions and documentation.
 
 ## 9. Planning Boundary
 

@@ -1,6 +1,6 @@
 ---
 name: video-analyzer
-description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, extract frames, and redact sensitive screen regions. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", "grab a frame at 30s", or "blur the API key in this recording". Works on local paths, file:// URIs, and direct http(s) media URLs. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
+description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, and extract frames. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", or "grab a frame at 30s". Works on local paths, file:// URIs, and direct http(s) media URLs. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
 argument-hint: 'A video path or URL plus what you want to know about it'
 ---
 
@@ -18,18 +18,17 @@ Use this skill when the user:
 - asks to summarize, transcribe, or search a recording
 - wants a frame, thumbnail, or screenshot from a video
 - needs technical media details (duration, resolution, codec, frame rate)
-- wants to hide secrets visible in a screen recording
 
 Do **not** use it for:
 
 - generating video, audio, images, or music (unsupported by design)
-- editing or re-encoding beyond redaction
+- editing or re-encoding media
 - unrelated programming questions
 
 ## Before You Start
 
 1. Confirm the user gave a usable input: a path, `file://` URI, or direct `http(s)` media URL. Platform page downloads are disabled.
-2. AI operations need `GEMINI_API_KEY`. Local operations (`get_video_info`, `extract_frames`, manual `redact_sensitive`) work without it.
+2. AI operations need `GEMINI_API_KEY`. Local operations (`get_video_info`, `extract_frames`) work without it.
 3. `ffmpeg`/`ffprobe` must be installed.
 
 If a prerequisite is missing, report exactly what is missing and how to fix it. Do not install packages or add API keys on the user's behalf.
@@ -44,7 +43,6 @@ If a prerequisite is missing, report exactly what is missing and how to fix it. 
 | Speech converted to text                                      | `transcribe_video` | yes          |
 | Duration, resolution, codec, frame rate, size                 | `get_video_info`   | no           |
 | Still images at times, intervals, or scene changes            | `extract_frames`   | no           |
-| Hiding secrets/passwords/keys on screen                       | `redact_sensitive` | optional     |
 
 Rules of thumb:
 
@@ -105,12 +103,6 @@ node ./scripts/invoke.mjs transcribe_video '{"videoPath":"./interview.m4a","lang
 node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
 ```
 
-**Redact a known area**
-
-```bash
-node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./recording.mp4","effect":"blur","regions":[{"x":40,"y":320,"width":420,"height":32,"label":"API key"}],"previewOnly":true}'
-```
-
 ## Presenting Results
 
 - Quote the model's answer faithfully. If `warnings` says timestamps are estimates, say so.
@@ -126,7 +118,6 @@ node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./recording.mp4","effe
 | `DEPENDENCY_MISSING`                          | `ffmpeg`/`ffprobe` not found                  | Install the tool or set `FFMPEG_PATH` / `FFPROBE_PATH`                          |
 | `INPUT_NOT_FOUND`                             | Path does not exist                           | Ask for the correct path                                                        |
 | `URL_REJECTED`                                | Private/reserved host blocked                 | Set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` only if the user trusts that host |
-| `CONSENT_REQUIRED`                            | AI redaction needs consent                    | Ask before uploading frames to Google                                           |
 | `GEMINI_TIMEOUT` / `GEMINI_PROCESSING_FAILED` | Long or unsupported media                     | Try a shorter clip or convert to MP4/H.264                                      |
 | `UNSUPPORTED_INPUT`                           | Not a media file, or audio-only frame request | Pick a different operation                                                      |
 
@@ -136,6 +127,5 @@ See [troubleshooting.md](./references/troubleshooting.md) for recovery steps.
 
 - Never claim to have watched a video without running an operation.
 - Never fabricate timestamps, speakers, or on-screen text.
-- Never enable AI redaction or upload personal media without asking first.
+- Never upload personal media to Google without asking first.
 - Never overwrite the user's source file: let the CLI choose an output path, or pass a new one.
-- Prefer `previewOnly: true` before rendering a redacted video the user has not reviewed.

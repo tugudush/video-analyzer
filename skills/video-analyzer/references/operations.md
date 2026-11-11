@@ -144,7 +144,7 @@ node ./scripts/invoke.mjs get_video_info '{"videoPath":"./demo.mp4"}'
 `hasVideo`, `hasAudio`, `video{codec,width,height,fps,pixelFormat}` and
 `audio{codec,sampleRate,channels}`.
 
-Use this first when you need duration or dimensions to plan frames or redaction regions.
+Use this first when you need duration or dimensions to plan frames.
 
 ---
 
@@ -174,45 +174,3 @@ where a timestamp is known. `data.hasMore` indicates another page exists.
 
 Frames are written into a folder under the working directory (or
 `VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted.
-
----
-
-## redact_sensitive
-
-Blur, pixelate, or black out regions.
-
-| Field                 | Type                               | Required                       | Notes                                                 |
-| --------------------- | ---------------------------------- | ------------------------------ | ----------------------------------------------------- |
-| `videoPath`           | string                             | yes                            | Must contain a video stream                           |
-| `effect`              | `blur` \| `pixelate` \| `blackout` | no                             | Default `blur`                                        |
-| `regions`             | object[]                           | unless `detectionMode` is `ai` | `{x, y, width, height, startTime?, endTime?, label?}` |
-| `detectionMode`       | `manual` \| `ai`                   | no                             | Default `manual`                                      |
-| `allowRemoteAnalysis` | boolean                            | required for `ai`              | Consent to upload sampled frames                      |
-| `sampleCount`         | integer 1–24                       | no                             | Frames for AI detection, default 8                    |
-| `previewOnly`         | boolean                            | no                             | Return outlined preview frames instead of a render    |
-| `outputPath`          | string                             | no                             | Where to write the video; must not equal the source   |
-
-Manual, with a preview first:
-
-```bash
-node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./rec.mp4","regions":[{"x":40,"y":320,"width":420,"height":32}],"previewOnly":true}'
-```
-
-Then render:
-
-```bash
-node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./rec.mp4","effect":"blackout","regions":[{"x":40,"y":320,"width":420,"height":32,"startTime":5,"endTime":20}],"outputPath":"./rec-redacted.mp4"}'
-```
-
-AI-assisted detection (ask the user first):
-
-```bash
-node ./scripts/invoke.mjs redact_sensitive '{"videoPath":"./rec.mp4","detectionMode":"ai","allowRemoteAnalysis":true,"previewOnly":true}'
-```
-
-Coordinates are pixels in the source video. Values outside the frame are
-clamped; obviously invalid regions raise `INVALID_INPUT`. `startTime`/`endTime`
-limit redaction to a window; omitting both redacts the whole video.
-
-Rendered output is H.264/AAC MP4 with fast-start, or the container implied by
-`outputPath`'s extension.

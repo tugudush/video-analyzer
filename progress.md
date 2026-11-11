@@ -35,11 +35,10 @@ Tracks work against [`findings-and-plan.md`](./findings-and-plan.md). Updated as
 ### Done
 
 - [x] `src/services/mediaInput.ts` — local path / `file://` URI / direct HTTP(S) / platform URL resolution. Direct downloads fall back to yt-dlp when the server returns a non-media content type. yt-dlp runs with argument arrays only, plus cookies/impersonation/resolution options and a 15-minute timeout.
-- [x] `src/services/ffmpeg.ts` — ffprobe metadata (duration, container, bitrate, video/audio stream details), frame extraction by count, interval, explicit timestamps, and scene detection (parses `showinfo` `pts_time`), redaction rendering for blur / pixelate / blackout, and preview-frame rendering with outlined regions.
+- [x] `src/services/ffmpeg.ts` — ffprobe metadata (duration, container, bitrate, video/audio stream details), frame extraction by count, interval, explicit timestamps, and scene detection (parses `showinfo` `pts_time`).
 - [x] `get_video_info` operation — no AI, formatted summary plus structured metadata.
 - [x] `extract_frames` operation — four modes, `maxImages`/`offset` pagination, configurable `outputDir`, scene budget from `VIDEO_ANALYZER_MAX_FRAMES`.
-- [x] `redact_sensitive` operation — manual regions validated/clamped against real frame dimensions; AI detection gated behind `allowRemoteAnalysis`; preview and full render paths; refuses to overwrite the source.
-- [x] Verified end-to-end on a generated 6s H.264/AAC fixture: metadata, frame extraction, and blur redaction all produce correct output (blur visually confirmed by comparing source vs rendered frames).
+- [x] Verified end-to-end on a generated 6s H.264/AAC fixture: metadata and frame extraction produce correct output.
 
 ### Notes / deviations
 
@@ -66,7 +65,7 @@ Tracks work against [`findings-and-plan.md`](./findings-and-plan.md). Updated as
 
 ---
 
-## Phase 4/5/6 — Analysis, transcription, redaction operations
+## Phase 4/5 — Analysis and transcription operations
 
 ### Done
 
@@ -82,13 +81,13 @@ Tracks work against [`findings-and-plan.md`](./findings-and-plan.md). Updated as
 
 ### Done
 
-- [x] `src/operations/registry.ts` — the seven operations are the single source of truth for names, titles, descriptions, schemas, and handlers.
+- [x] `src/operations/registry.ts` — the six operations are the single source of truth for names, titles, descriptions, schemas, and handlers.
 - [x] `src/operations/execute.ts` — one execution path used by both adapters.
 - [x] `src/adapters/envelope.ts` — shared result envelope; base64 inlining only for interfaces that need it.
 - [x] `src/adapters/mcpTools.ts` + `mcpServer.ts` — MCP stdio server, per-tool error containment, image content blocks, progress via MCP logging notifications, stdout kept clean for protocol frames.
 - [x] `src/adapters/cli.ts` + `src/cli.ts` — JSON-in / JSON-out CLI with `list`, `help`, `mcp`, `--input`, `--input-file`, stdin, `--pretty`; errors go to stdout as an envelope **and** stderr as text with a nonzero exit code.
 - [x] `src/mcp.ts` — dedicated MCP binary.
-- [x] `npm run build` succeeds; `node dist/cli.js list|help|get_video_info|extract_frames|redact_sensitive` verified against real media.
+- [x] `npm run build` succeeds; `node dist/cli.js list|help|get_video_info|extract_frames` verified against real media.
 
 ---
 
@@ -126,17 +125,17 @@ Test Files  13 passed (13)
 Tests       125 passed (125)
 ```
 
-| Area                 | Coverage                                                                                                                                                                                                                                                  |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit                 | config parsing/validation, `.env` parsing and precedence, MIME mapping, SSRF address classification, timestamp parsing, JSON extraction, redaction region normalization, Gemini upload/poll/reuse/timeout/coalescing, CLI arg parsing and error envelopes |
-| Contract             | CLI and MCP expose identical names, schemas, descriptions, and handlers from one registry; no generative tools                                                                                                                                            |
-| Integration (ffmpeg) | metadata, `file://` URIs, audio-only detection, even/interval/timestamp/scene frame extraction, pagination, blur/pixelate/blackout rendering, preview frames, source-overwrite refusal, consent gating                                                    |
-| Integration (MCP)    | tool listing, schema publication, error containment, real `get_video_info` call over an in-memory transport                                                                                                                                               |
-| Skill                | frontmatter, discoverability, file-budget, referenced files, launcher list + error paths                                                                                                                                                                  |
+| Area                 | Coverage                                                                                                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit                 | config parsing/validation, `.env` parsing and precedence, MIME mapping, SSRF address classification, timestamp parsing, JSON extraction, Gemini upload/poll/reuse/timeout/coalescing, CLI arg parsing and error envelopes |
+| Contract             | CLI and MCP expose identical names, schemas, descriptions, and handlers from one registry; no generative tools                                                                                                            |
+| Integration (ffmpeg) | metadata, `file://` URIs, audio-only detection, even/interval/timestamp/scene frame extraction, pagination                                                                                                                |
+| Integration (MCP)    | tool listing, schema publication, error containment, real `get_video_info` call over an in-memory transport                                                                                                               |
+| Skill                | frontmatter, discoverability, file-budget, referenced files, launcher list + error paths                                                                                                                                  |
 
 ### Bugs found and fixed during implementation
 
-1. Explicit output directories were not created before invoking ffmpeg (`extract_frames`, `redact_sensitive`).
+1. Explicit output directories were not created before invoking ffmpeg (`extract_frames`).
 2. `-vsync` was removed in ffmpeg 9; scene detection now uses a two-pass `showinfo` timestamp scan plus per-timestamp extraction, which also works on ffmpeg 5–8.
 3. `extract_frames` trimmed extraction to the current page, making pagination unreachable — it now extracts the full requested set.
 4. The `search_timestamp` parser missed space-separated ranges (`MATCH 42.5 47.0 — …`).
@@ -148,7 +147,6 @@ Tests       125 passed (125)
 
 - **Linting uses oxlint.** `typescript-eslint@8` refuses to load on TypeScript 7, so ESLint cannot parse this project (details below).
 - **MCP schema violations surface as JSON-RPC `-32602`.** The MCP SDK validates arguments against the shared Zod schema before the handler runs, so users see the SDK's field-level message rather than our `INVALID_INPUT` envelope. The CLI path does emit `INVALID_INPUT`. Both are actionable and name the offending field.
-- **AI redaction detects whole-video regions.** Detected regions have no time bounds; callers can add `startTime`/`endTime` manually.
 - **No live Gemini test.** No API key was available. Every Gemini code path is covered through the `GeminiApi` interface with mocked SDK behaviour; a `tests/live/` opt-in suite is still to be added.
 
 ## Linting

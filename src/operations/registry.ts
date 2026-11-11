@@ -2,7 +2,6 @@ import type { z } from 'zod'
 import { analyzeVideoOperation } from './analyzeVideo.js'
 import { extractFramesOperation } from './extractFrames.js'
 import { getVideoInfoOperation } from './getVideoInfo.js'
-import { redactSensitiveOperation } from './redactSensitive.js'
 import { searchTimestampOperation } from './searchTimestamp.js'
 import { summarizeVideoOperation } from './summarizeVideo.js'
 import { transcribeVideoOperation } from './transcribeVideo.js'
@@ -22,7 +21,6 @@ export const OPERATIONS = [
   transcribeVideoOperation,
   getVideoInfoOperation,
   extractFramesOperation,
-  redactSensitiveOperation,
 ] as const satisfies readonly Operation<z.ZodTypeAny>[]
 
 export type OperationName = (typeof OPERATIONS)[number]['name']

@@ -36,13 +36,12 @@ describe('MCP adapter', () => {
     await handle.close()
   })
 
-  it('advertises exactly the seven analysis operations', async () => {
+  it('advertises exactly the six analysis operations', async () => {
     const { tools } = await client.listTools()
     expect(tools.map((tool) => tool.name).toSorted()).toEqual([
       'analyze_video',
       'extract_frames',
       'get_video_info',
-      'redact_sensitive',
       'search_timestamp',
       'summarize_video',
       'transcribe_video',

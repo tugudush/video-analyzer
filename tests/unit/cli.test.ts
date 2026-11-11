@@ -55,7 +55,6 @@ describe('runCli', () => {
       'transcribe_video',
       'get_video_info',
       'extract_frames',
-      'redact_sensitive',
     ])
   })
 

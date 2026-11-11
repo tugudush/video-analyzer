@@ -54,7 +54,6 @@ describe('video-analyzer Skill package', () => {
       'transcribe_video',
       'get_video_info',
       'extract_frames',
-      'redact_sensitive',
     ]) {
       expect(source).toContain(operation)
     }
@@ -96,7 +95,7 @@ describe('video-analyzer Skill package', () => {
 
     const payload = JSON.parse(stdout) as { ok: boolean; operations: Array<{ name: string }> }
     expect(payload.ok).toBe(true)
-    expect(payload.operations).toHaveLength(7)
+    expect(payload.operations).toHaveLength(6)
   })
 
   it('launcher reports missing input as a JSON error', async () => {

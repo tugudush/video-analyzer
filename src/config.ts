@@ -142,7 +142,7 @@ export function loadConfig(
 export function requireGeminiApiKey(config: Config): string {
   if (!config.geminiApiKey) {
     throw configMissing('GEMINI_API_KEY is not set.', {
-      hint: 'Create a key at https://aistudio.google.com/app/apikey and export GEMINI_API_KEY. Local tools (get_video_info, extract_frames, manual redaction) work without it.',
+      hint: 'Create a key at https://aistudio.google.com/app/apikey and export GEMINI_API_KEY. Local tools (get_video_info, extract_frames) work without it.',
     })
   }
   return config.geminiApiKey

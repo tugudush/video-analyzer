@@ -113,34 +113,3 @@ export const ANALYST_SYSTEM_INSTRUCTION = [
   'When the media does not contain the requested information, say so plainly.',
   'If you are uncertain, state the uncertainty rather than guessing.',
 ].join(' ')
-
-/**
- * Extract the first JSON array/object from a model response, tolerating code
- * fences and surrounding prose.
- */
-export function extractJsonPayload(text: string): unknown {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const candidate = (fenced?.[1] ?? text).trim()
-
-  try {
-    return JSON.parse(candidate)
-  } catch {
-    // Fall through to a scan for the first balanced JSON structure.
-  }
-
-  const startArray = candidate.indexOf('[')
-  const startObject = candidate.indexOf('{')
-  const starts = [startArray, startObject].filter((index) => index >= 0)
-  if (starts.length === 0) return undefined
-  const start = Math.min(...starts)
-  const opener = candidate[start]
-  const closer = opener === '[' ? ']' : '}'
-  const end = candidate.lastIndexOf(closer)
-  if (end <= start) return undefined
-
-  try {
-    return JSON.parse(candidate.slice(start, end + 1))
-  } catch {
-    return undefined
-  }
-}

@@ -2,7 +2,7 @@
 
 Gemini-powered video and audio analysis you can use **either as an MCP server or as an agent Skill**.
 
-Ask questions about a recording, summarise it, find when something happens, transcribe speech, read technical metadata, pull frames, and redact secrets on screen — from one shared core, exposed through two independent interfaces.
+Ask questions about a recording, summarise it, find when something happens, transcribe speech, read technical metadata, and pull frames — from one shared core, exposed through two independent interfaces.
 
 - **MCP interface** — tools discovered by MCP clients.
 - **Skill interface** — an on-demand `SKILL.md` workflow that calls the local CLI. **No MCP server required.**
@@ -19,7 +19,6 @@ Neither interface depends on the other. Install one, or both.
 | `transcribe_video` | Plain-text speech-to-text                                 | yes          |
 | `get_video_info`   | Duration, resolution, frame rate, codecs, size            | no           |
 | `extract_frames`   | Frames by count, interval, timestamps, or scene changes   | no           |
-| `redact_sensitive` | Blur / pixelate / blackout regions                        | optional     |
 
 Inputs can be local paths, `file://` URIs, or direct `http(s)` media URLs. Platform page downloads and yt-dlp fallback are disabled because their network destinations cannot be validated; use a local file or direct media URL instead.
 
@@ -183,7 +182,7 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    ```
 
 4. Invoke it:
-   - **VS Code / Copilot** — run `/video-analyzer`, or just ask about a video; the Skill description covers analysis, summarization, transcription, timestamp search, metadata, frames, and redaction.
+   - **VS Code / Copilot** — run `/video-analyzer`, or just ask about a video; the Skill description covers analysis, summarization, transcription, timestamp search, metadata, and frames.
    - **Claude Code** — ask the same way; the Skill is discovered from `.claude/skills/` or `~/.claude/skills/` and Claude invokes its bundled `scripts/invoke.mjs`.
 
 Check it works:
@@ -243,10 +242,6 @@ video-analyzer transcribe_video --input '{"videoPath":"./interview.m4a","outputP
 
 # Frames at specific times
 video-analyzer extract_frames --input '{"videoPath":"./demo.mp4","mode":"timestamps","timestamps":[3,12.5,30],"outputDir":"./frames"}'
-
-# Preview a redaction, then render it
-video-analyzer redact_sensitive --input '{"videoPath":"./rec.mp4","regions":[{"x":40,"y":320,"width":420,"height":32}],"previewOnly":true}'
-video-analyzer redact_sensitive --input '{"videoPath":"./rec.mp4","effect":"blackout","regions":[{"x":40,"y":320,"width":420,"height":32}],"outputPath":"./rec-redacted.mp4"}'
 ```
 
 Full argument reference: [`skills/video-analyzer/references/operations.md`](skills/video-analyzer/references/operations.md).
@@ -274,7 +269,7 @@ Details: [`skills/video-analyzer/references/configuration.md`](skills/video-anal
 
 ## Errors
 
-Every failure uses a stable code: `INVALID_INPUT`, `CONFIG_MISSING`, `DEPENDENCY_MISSING`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`, `URL_REJECTED`, `DOWNLOAD_FAILED`, `MEDIA_PROCESSING_FAILED`, `GEMINI_UPLOAD_FAILED`, `GEMINI_PROCESSING_FAILED`, `GEMINI_REQUEST_FAILED`, `GEMINI_TIMEOUT`, `CONSENT_REQUIRED`, `OUTPUT_FAILED`, `INTERNAL`.
+Every failure uses a stable code: `INVALID_INPUT`, `CONFIG_MISSING`, `DEPENDENCY_MISSING`, `INPUT_NOT_FOUND`, `UNSUPPORTED_INPUT`, `URL_REJECTED`, `DOWNLOAD_FAILED`, `MEDIA_PROCESSING_FAILED`, `GEMINI_UPLOAD_FAILED`, `GEMINI_PROCESSING_FAILED`, `GEMINI_REQUEST_FAILED`, `GEMINI_TIMEOUT`, `OUTPUT_FAILED`, `INTERNAL`.
 
 Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skills/video-analyzer/references/troubleshooting.md).
 
@@ -283,7 +278,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Single provider.** If Gemini is down or out of quota, AI operations fail with a clear error. There is no fallback provider by design.
 - **Timestamps are estimates.** `search_timestamp` reflects Gemini's internal sampling. Confirm with `extract_frames` before cutting.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
-- **Sensitive media leaves the machine** for AI operations. AI-assisted redaction additionally requires an explicit `allowRemoteAnalysis: true`.
+- **Sensitive media leaves the machine** for AI operations.
 - **SSRF protection is best-effort.** Hostnames are resolved and every redirect hop is revalidated, but the resolve→connect window is not pinned, so DNS rebinding is theoretically possible. Private hosts are blocked unless explicitly opted in.
 - **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked.
 - **Frame extraction writes to disk.** Returned image paths persist until you delete them.
