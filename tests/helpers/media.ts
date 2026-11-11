@@ -79,6 +79,59 @@ export async function createSampleVideo(
   return { path: target, durationSeconds: duration, width, height }
 }
 
+/** Create an audio file whose only video stream is embedded cover art. */
+export async function createAudioWithCoverArt(dir: string, durationSeconds = 2): Promise<string> {
+  await mkdir(dir, { recursive: true })
+  const cover = path.join(dir, 'cover.jpg')
+  await execFileAsync(
+    FFMPEG,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=red:s=64x64',
+      '-frames:v',
+      '1',
+      cover,
+    ],
+    { timeout: 60_000, windowsHide: true },
+  )
+
+  const target = path.join(dir, 'covered.mp3')
+  await execFileAsync(
+    FFMPEG,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      `sine=frequency=440:duration=${durationSeconds}`,
+      '-i',
+      cover,
+      '-map',
+      '0:a',
+      '-map',
+      '1:v',
+      '-c:a',
+      'libmp3lame',
+      '-c:v',
+      'copy',
+      '-disposition:v',
+      'attached_pic',
+      target,
+    ],
+    { timeout: 60_000, windowsHide: true },
+  )
+  return target
+}
+
 /** Create an audio-only test file. */
 export async function createSampleAudio(dir: string, durationSeconds = 2): Promise<string> {
   await mkdir(dir, { recursive: true })

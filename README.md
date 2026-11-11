@@ -292,7 +292,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Timestamps are estimates.** `search_timestamp` reflects Gemini's internal sampling. Confirm with `extract_frames` before cutting.
 - **Interval frame labels are approximate.** They describe the sampling grid, not the exact presentation times of the source frames.
 - **Requested frame times are not source timestamps.** Timestamp extraction selects the first frame at or after the requested time, or the last frame if the seek reaches the end. Labels and `data.timestamps` retain the requested times; the end-of-clip fallback can be slower.
-- **Multi-stream inputs use the first video stream.** Metadata and all frame extraction modes use the first video stream reported by ffprobe, even if a different stream is marked default.
+- **Multi-stream inputs use the first real video stream.** Metadata and all frame extraction modes use the first video stream reported by ffprobe that is not embedded cover art, even if a different stream is marked default. Audio files whose artwork is stored as an `attached_pic` stream are reported as audio-only and rejected by `extract_frames`.
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
 - **Gemini retains uploads.** The [Gemini Files API](https://aistudio.google.com/docs/file-input-methods) documents 48-hour storage for uploaded files. This tool does not delete them remotely; use the [Files API](https://aistudio.google.com/api-reference/files) to list or delete them sooner. Deleting a reused upload makes the next request upload it again.

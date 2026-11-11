@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { GoogleGenAI } from '@google/genai'
 import type { Config } from '../config.js'
 import { requireGeminiApiKey } from '../config.js'
@@ -80,26 +81,93 @@ function normalizeHandle(file: {
   }
 }
 
+type SdkFetch = (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>
+
+/**
+ * The SDK's upload path drops `config.abortSignal`, so neither the initialization
+ * request nor the chunk transfer would stop when the caller cancels. Each upload
+ * runs inside this store and the fetch wrapper applies the bound signal to every
+ * request the SDK makes on its behalf.
+ */
+const uploadSignals = new AsyncLocalStorage<AbortSignal>()
+
+function withUploadSignal(base: SdkFetch): SdkFetch {
+  return (input, init) => {
+    const bound = uploadSignals.getStore()
+    if (!bound) return base(input, init)
+    const signal = init?.signal ? AbortSignal.any([bound, init.signal]) : bound
+    return base(input, { ...init, signal })
+  }
+}
+
+/**
+ * One signal covering caller cancellation and the call deadline, with an unref'd
+ * timer so a pending deadline cannot keep the process alive.
+ */
+function bindUpload(params: GeminiRequestOptions): { signal: AbortSignal; dispose(): void } {
+  if (params.signal?.aborted) throw operationCancelled()
+
+  const timeoutMs = params.timeoutMs
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let deadline: AbortSignal | undefined
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    const controller = new AbortController()
+    timer = setTimeout(
+      () => controller.abort(new DOMException('Timed out', 'TimeoutError')),
+      timeoutMs,
+    )
+    timer.unref()
+    deadline = controller.signal
+  }
+
+  const signal = params.signal
+    ? deadline
+      ? AbortSignal.any([params.signal, deadline])
+      : params.signal
+    : (deadline ?? new AbortController().signal)
+
+  return {
+    signal,
+    dispose: () => {
+      if (timer !== undefined) clearTimeout(timer)
+    },
+  }
+}
+
 /** Real SDK-backed implementation. */
 export class GoogleGenAiApi implements GeminiApi {
   private readonly client: GoogleGenAI
 
-  constructor(apiKey: string) {
-    this.client = new GoogleGenAI({ apiKey })
+  /**
+   * `fetch` is a test seam. It is still wrapped, so an injected transport sees
+   * the same cancellation behavior as the real one.
+   */
+  constructor(apiKey: string, options: { fetch?: SdkFetch } = {}) {
+    this.client = new GoogleGenAI({
+      apiKey,
+      httpOptions: { fetch: withUploadSignal(options.fetch ?? fetch) },
+    })
   }
 
   async uploadFile(
     params: { path: string; mimeType?: string } & GeminiRequestOptions,
   ): Promise<GeminiFileHandle> {
-    const config = {
-      ...(params.mimeType ? { mimeType: params.mimeType } : {}),
-      ...sdkRequestConfig(params),
+    const bound = bindUpload(params)
+    try {
+      return await uploadSignals.run(bound.signal, async () => {
+        // No request-level `httpOptions` here: the SDK replaces its required
+        // resumable-upload defaults (empty API version and the `x-goog-upload-*`
+        // headers) whenever one is supplied, which breaks the upload endpoint.
+        // The bound signal enforces the deadline and cancellation instead.
+        const uploaded = await this.client.files.upload({
+          file: params.path,
+          ...(params.mimeType ? { config: { mimeType: params.mimeType } } : {}),
+        })
+        return normalizeHandle(uploaded as Parameters<typeof normalizeHandle>[0])
+      })
+    } finally {
+      bound.dispose()
     }
-    const uploaded = await this.client.files.upload({
-      file: params.path,
-      ...(Object.keys(config).length > 0 ? { config } : {}),
-    })
-    return normalizeHandle(uploaded as Parameters<typeof normalizeHandle>[0])
   }
 
   async getFile(name: string, options: GeminiRequestOptions = {}): Promise<GeminiFileHandle> {

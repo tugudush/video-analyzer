@@ -166,12 +166,14 @@ node ./scripts/invoke.mjs get_video_info '{"videoPath":"./demo.mp4"}'
 ```
 
 `data` contains `durationSeconds`, `container`, `sizeBytes`, `bitRate`,
-`hasVideo`, `hasAudio`, `video{codec,width,height,fps,pixelFormat}` and
-`audio{codec,sampleRate,channels}`.
+`hasVideo`, `hasAudio`, `video{index,codec,width,height,fps,pixelFormat}` and
+`audio{index,codec,sampleRate,channels}`.
 
 Use this first when you need duration or dimensions to plan frames.
 For media with multiple video streams, the metadata and every frame extraction
-mode use the first video stream, even if a different stream is marked default.
+mode use the same stream: the first video stream that is not embedded cover art,
+even if a different stream is marked default. Audio files that carry album art
+are reported as audio-only, so `extract_frames` rejects them.
 
 ---
 

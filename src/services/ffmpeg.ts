@@ -17,6 +17,8 @@ const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000
 const FFPROBE_TIMEOUT_MS = 60 * 1000
 
 export interface VideoStreamInfo {
+  /** Absolute stream index, used to map this stream for every extraction mode. */
+  index: number
   codec: string
   width: number
   height: number
@@ -25,6 +27,7 @@ export interface VideoStreamInfo {
 }
 
 export interface AudioStreamInfo {
+  index: number
   codec: string
   sampleRate: number | undefined
   channels: number | undefined
@@ -49,6 +52,17 @@ interface ProbeJson {
 function toNumber(value: unknown): number | undefined {
   const parsed = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+/**
+ * Cover art is stored as a video stream with `attached_pic` set. It carries a
+ * single still image rather than motion video, so it must not be reported or
+ * mapped as the clip's video stream.
+ */
+function isAttachedPicture(stream: Record<string, unknown>): boolean {
+  const disposition = stream['disposition']
+  if (typeof disposition !== 'object' || disposition === null) return false
+  return Number((disposition as Record<string, unknown>)['attached_pic'] ?? 0) === 1
 }
 
 function parseFrameRate(raw: unknown): number | undefined {
@@ -145,7 +159,9 @@ export async function getMediaMetadata(
   }
 
   const streams = parsed.streams ?? []
-  const videoStream = streams.find((stream) => stream['codec_type'] === 'video')
+  const videoStream = streams.find(
+    (stream) => stream['codec_type'] === 'video' && !isAttachedPicture(stream),
+  )
   const audioStream = streams.find((stream) => stream['codec_type'] === 'audio')
   const format = parsed.format ?? {}
 
@@ -163,6 +179,7 @@ export async function getMediaMetadata(
     hasAudio: audioStream !== undefined,
     video: videoStream
       ? {
+          index: toNumber(videoStream['index']) ?? 0,
           codec: String(videoStream['codec_name'] ?? 'unknown'),
           width: toNumber(videoStream['width']) ?? 0,
           height: toNumber(videoStream['height']) ?? 0,
@@ -175,6 +192,7 @@ export async function getMediaMetadata(
       : undefined,
     audio: audioStream
       ? {
+          index: toNumber(audioStream['index']) ?? 0,
           codec: String(audioStream['codec_name'] ?? 'unknown'),
           sampleRate: toNumber(audioStream['sample_rate']),
           channels: toNumber(audioStream['channels']),
@@ -198,6 +216,11 @@ export interface FrameExtractionOptions {
   outDir: string
   /** Longest-edge cap in pixels; keeps MCP image payloads reasonable. */
   maxWidth?: number
+  /**
+   * Absolute index of the video stream to map, from the probed metadata.
+   * Defaults to the first stream, which is what `0:v:0` selects.
+   */
+  videoStreamIndex?: number
   /**
    * Duration the caller already probed. Supplying it skips a second `ffprobe`
    * run on the same file.
@@ -252,6 +275,11 @@ function scaleFilter(options: FrameExtractionOptions): string {
 
 function frameArgs(options: FrameExtractionOptions): string[] {
   return ['-vf', scaleFilter(options), '-q:v', '3']
+}
+
+/** Map the probed video stream by its absolute index, never a cover-art stream. */
+function videoMap(options: FrameExtractionOptions): string {
+  return `0:${options.videoStreamIndex ?? 0}`
 }
 
 /**
@@ -327,7 +355,7 @@ export async function extractFramesEvenly(
       '-i',
       filePath,
       '-map',
-      '0:v:0',
+      videoMap(options),
       '-vf',
       `fps=${fps.toFixed(6)},${scaleFilter(options)}`,
       '-frames:v',
@@ -393,7 +421,7 @@ export async function extractFramesAtInterval(
       '-i',
       filePath,
       '-map',
-      '0:v:0',
+      videoMap(options),
       '-vf',
       `fps=1/${intervalSec}:round=up,${scaleFilter(options)}`,
       // Stop the encoder at the budget so a long input cannot fill the disk.
@@ -456,7 +484,7 @@ export async function extractFramesAtTimestamps(
           '-i',
           filePath,
           '-map',
-          '0:v:0',
+          videoMap(options),
           '-frames:v',
           '1',
           ...frameArgs(options),
@@ -489,7 +517,7 @@ export async function extractFramesAtTimestamps(
             '-i',
             filePath,
             '-map',
-            '0:v:0',
+            videoMap(options),
             '-vf',
             `tpad=stop_mode=clone:stop_duration=${(timestamp + 1).toFixed(9)},fps=1000:start_time=${timestamp.toFixed(9)}:round=near,${scaleFilter(options)}`,
             '-frames:v',
@@ -555,7 +583,7 @@ export async function extractSceneFrames(
     '-i',
     filePath,
     '-map',
-    '0:v:0',
+    videoMap(options),
     '-an',
     '-vf',
     `select='gt(scene,${threshold})'${detectionLimit ? `,trim=end_frame=${detectionLimit}` : ''},showinfo`,

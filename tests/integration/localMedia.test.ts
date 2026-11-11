@@ -13,7 +13,13 @@ import { executeOperation } from '../../src/operations/execute.js'
 import { extractFramesEvenly, getMediaMetadata } from '../../src/services/ffmpeg.js'
 import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
 import { createLogger } from '../../src/utils/logger.js'
-import { createSampleAudio, createSampleVideo, ffmpegAvailable, FFMPEG } from '../helpers/media.js'
+import {
+  createAudioWithCoverArt,
+  createSampleAudio,
+  createSampleVideo,
+  ffmpegAvailable,
+  FFMPEG,
+} from '../helpers/media.js'
 import { artifactDirOf } from '../helpers/results.js'
 
 const available = await ffmpegAvailable()
@@ -126,6 +132,17 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     const result = await executeOperation(getVideoInfoOperation, { videoPath: audioPath }, config)
     expect(result.data).toMatchObject({ hasVideo: false, hasAudio: true })
     expect(result.warnings?.join(' ')).toContain('audio-only')
+  })
+
+  it('treats embedded cover art as audio-only', async () => {
+    const audioPath = await createAudioWithCoverArt(workDir)
+    const info = await executeOperation(getVideoInfoOperation, { videoPath: audioPath }, config)
+    expect(info.data).toMatchObject({ hasVideo: false, hasAudio: true })
+    expect(info.warnings?.join(' ')).toContain('audio-only')
+
+    await expect(
+      executeOperation(extractFramesOperation, { videoPath: audioPath }, config),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_INPUT' })
   })
 
   it('extracts evenly spaced frames into an explicit directory', async () => {

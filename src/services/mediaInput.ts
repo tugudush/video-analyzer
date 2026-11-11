@@ -116,7 +116,15 @@ async function resolveDirect(
       })
     }
 
-    const mimeType = declared && isMediaMimeType(declared) ? declared : fromUrl
+    // A known media extension is only a fallback for a missing or generic
+    // Content-Type; an image URL must not reach the AI service or be reported as
+    // video just because the server omitted its type.
+    const mimeType =
+      declared && isMediaMimeType(declared)
+        ? declared
+        : isMediaMimeType(fromUrl)
+          ? fromUrl
+          : undefined
     if (!mimeType) {
       throw new VideoAnalyzerError(
         'UNSUPPORTED_INPUT',

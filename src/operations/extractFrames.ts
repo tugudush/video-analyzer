@@ -297,6 +297,10 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         )
       }
 
+      // Cover art is a still image stream, so the metadata's choice of motion
+      // video stream decides what every mode maps below.
+      const videoStreamIndex = prepared.metadata.video?.index ?? 0
+
       // Every extraction gets its own folder. Writing straight into a
       // caller-supplied directory would leave frames from an earlier run in the
       // listing, so `totalFrames`, paging, and `truncated` would describe a
@@ -315,6 +319,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         paths = await extractFramesEvenly(prepared.path, input.count ?? DEFAULT_COUNT, ctx.config, {
           outDir,
           durationSeconds: prepared.metadata.durationSeconds,
+          videoStreamIndex,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         })
       } else if (mode === 'interval') {
@@ -323,6 +328,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
           outDir,
           durationSeconds: prepared.metadata.durationSeconds,
           maxFrames: ctx.config.maxFrames,
+          videoStreamIndex,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         })
         paths = result.paths
@@ -353,6 +359,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         const requested = input.timestamps as number[]
         paths = await extractFramesAtTimestamps(prepared.path, requested, ctx.config, {
           outDir,
+          videoStreamIndex,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         })
         timestamps.push(...requested)
@@ -367,6 +374,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
           {
             outDir,
             maxFrames: sceneLimit,
+            videoStreamIndex,
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           },
         )

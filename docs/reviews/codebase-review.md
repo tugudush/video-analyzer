@@ -1,158 +1,177 @@
 # Codebase review
 
+Reviewed 2026-11-12 against commit `927c5fe` and the working tree. This is a
+correctness, reliability, and maintainability review, not a penetration test.
+The findings below were written before remediation and describe the pre-fix
+state; their source links point at that commit, so line numbers may have shifted
+since.
+
 ## Remediation status — 2026-11-12
 
-- The four P2 findings and the P3 documentation issue were fixed and covered by
-  regression tests. Timestamp results now require the standalone `NO_MATCH`
-  marker; explanations after it are deliberately treated as unknown, rather
-  than risking another false negative.
-- Download connections are pinned to each hop's validated DNS addresses while
-  preserving the URL hostname for HTTP and TLS.
-- The provider's documented upload retention and manual early-deletion policy
-  are now described in the README and Skill configuration reference. Automatic
-  deletion is not enabled because it would invalidate uploads shared by
-  concurrent requests; provider retention remains a privacy consideration.
-- The CI matrix recommendation is deferred. A live Gemini request was not
-  performed as part of this remediation.
-- `npm run check` passed on Windows with Node 22.23.4, 24.12.0, and 26.11.1
-  (299 tests passed and one platform-dependent test skipped on each). A local
-  HTTPS check also confirmed hostname/SNI preservation and certificate hostname
-  rejection with pinned DNS.
+All four findings are fixed and covered by regression tests.
 
-The findings and verification below describe the original review, before
-remediation; their source line references may have shifted.
+- **P1/P2 (Gemini upload):** Uploads no longer pass request-level
+  `httpOptions`, which had replaced the SDK's resumable-upload URL and
+  protocol headers. Every SDK request made for an upload is now bound to the
+  caller's signal and the call deadline through an injected fetch transport, so
+  cancellation and timeouts reach the initialization request and every chunk.
+  The new tests drive the real SDK through a fake transport and assert the
+  initialization URL and headers, plus that a cancel or deadline aborts the
+  chunk request.
+- **P2 (cover art):** `attached_pic` streams are excluded from video detection,
+  and every extraction mode maps the probed stream index instead of the first
+  video stream. Generated MP3 cover art is now reported as audio-only and
+  rejected by `extract_frames`; regression tests cover cover-only and
+  cover-plus-video media in all four extraction modes.
+- **P3 (remote image):** A missing or generic `Content-Type` now falls back only
+  to a media extension, so remote images are rejected like their local
+  counterparts.
 
-Reviewed 2026-11-11 against commit `14b3b77` and the working tree. This is a
-correctness, reliability, and maintainability review, not a penetration test.
-No application code was changed.
+`npm run check` passes: typecheck, lint, build, 21 test files, 307 tests passed
+and 1 skipped, and formatting. No live Gemini request was performed, so a
+provider-side upload was not exercised.
+
+| Finding                                            | Status      |
+| -------------------------------------------------- | ----------- |
+| P1 — Gemini upload URL and headers                 | ✅ Resolved |
+| P2 — Upload cancellation leaves the transfer alive | ✅ Resolved |
+| P2 — Audio cover art treated as video              | ✅ Resolved |
+| P3 — Remote image bypasses media-type validation   | ✅ Resolved |
 
 ## Summary
 
-The project has a clear shared-core design: CLI and MCP adapters expose the same
-operation registry, and services isolate Gemini, FFmpeg, and media resolution.
-Schema validation, bounded frame extraction, explicit error codes, temporary
-directory ownership, and substantial unit and integration coverage are
-strengths.
+The shared operation registry keeps the CLI and MCP interfaces aligned.
+Validation, bounded frame extraction, per-hop download checks, isolated logging,
+and focused unit and integration tests are strengths.
 
-Four reproducible issues merit attention: uncertain timestamp answers can become
-false negatives, the Skill drops successful CLI diagnostics, DNS resolution
-is outside download cancellation and deadlines, and embedded MCP servers share a
-global logging sink. A minor documentation count is also stale.
+Four issues were reproduced before remediation. The first was a release blocker
+for the installed Gemini SDK: the upload request was constructed with an
+incorrect URL and missing resumable-upload headers. Cancellation also did not
+stop the actual SDK upload. Two lower-impact media classification issues
+affected audio with cover art and remote images without a content type.
 
-Severity: **P2** means a meaningful defect under the stated conditions; **P3**
-means a lower-impact defect.
+Severity: **P1** blocks a core capability; **P2** is a meaningful defect under
+the stated conditions; **P3** is lower impact.
 
 ## Findings
 
-### P2 — An uncertain timestamp answer can become a definite negative
+### P1 — Gemini upload requests lose the SDK's required upload configuration
 
-- **Evidence:** [`isNoMatch`](../../src/operations/searchTimestamp.ts#L79)
-  accepts `NO_MATCH` anywhere in a response with no parsed matches, and the
-  [result branch](../../src/operations/searchTimestamp.ts#L116) returns
-  `found: false`. Other unparseable answers correctly return `found: null`.
-- **Reproduced:** With a generated audio fixture and an injected Gemini service,
-  the response `I cannot determine whether this occurs; do not conclude
-NO_MATCH.` produced `No match found` and `found: false`.
-- **Impact:** A model explanation or refusal that mentions the marker can be
-  presented as evidence that the event did not occur, misleading downstream
-  clients and agents.
-- **Recommendation:** Treat only an unambiguous negative response as
-  `NO_MATCH`; preserve uncertain or malformed responses as `found: null`. Add
-  cases for quoted/negated markers and retain the intentionally supported
-  `NO_MATCH — explanation` form where appropriate.
+- **Status:** ✅ **Resolved.** The upload adapter no longer supplies
+  request-level `httpOptions`, restoring the SDK's upload URL and protocol
+  headers. Covered by a real-SDK transport test that asserts
+  `/upload/v1beta/files` and the `x-goog-upload-*` headers. Not verified
+  against the live provider.
+- **Evidence:** The [SDK wrapper](../../src/services/gemini.ts#L55) always
+  supplies `httpOptions.timeout` for a service upload. With the locked
+  [`@google/genai` 2.32.0](../../package-lock.json#L32), supplying
+  `httpOptions` replaces the SDK's upload-specific options instead of extending
+  them. Its upload initialization therefore loses both the empty API version
+  and the resumable-upload headers.
+- **Reproduced:** With the real installed SDK and an intercepted local fake
+  `fetch`, a direct SDK upload without `httpOptions` requested
+  `/upload/v1beta/files` with the `x-goog-upload-*` headers. The application's
+  wrapper requested `/v1beta/upload/v1beta/files` with none of those headers.
+  No request was sent to Gemini.
+- **Impact:** All four Gemini-backed operations pass through this upload path.
+  They are expected to fail to initialize uploads with the locked SDK, even
+  with a valid key and media. The live provider response was not verified.
+- **Recommendation:** Use a supported SDK upload configuration that preserves
+  the required path and protocol headers, or move to a verified SDK version
+  that handles request options correctly. Add a test around the real SDK
+  transport that checks the initialization URL and headers; service-level
+  mocks alone cannot detect this mismatch.
 
-### P2 — The Skill hides diagnostics from successful CLI runs
+### P2 — Cancelling an upload leaves the underlying SDK transfer running
 
-- **Evidence:** The launcher
-  [captures stderr](../../skills/video-analyzer/scripts/invoke.mjs#L75) but
-  [forwards it only on a nonzero exit](../../skills/video-analyzer/scripts/invoke.mjs#L193).
-  Temporary cleanup failures are reported through
-  [`logger.warn`](../../src/utils/fsUtils.ts#L35), not the result envelope.
-- **Reproduced:** A successful CLI stub that wrote a JSON result to stdout and
-  `Warning: cleanup failed` to stderr yielded an empty launcher stderr.
-- **Impact:** Skill users can miss a failed cleanup and be unaware that
-  downloaded media remains on disk. Verbose progress and other successful-run
-  diagnostics are also lost. Operation warnings included in the JSON envelope
-  remain visible.
-- **Recommendation:** Forward successful child stderr as well, without mixing it
-  into JSON stdout; test successful warnings and cleanup-failure diagnostics.
+- **Status:** ✅ **Resolved.** The upload's initialization and chunk requests are
+  now bound to the caller's signal and call deadline through an injected fetch
+  transport. Regression tests cancel and time out a real-SDK upload through a
+  fake transport and assert the chunk request is aborted.
+- **Evidence:** The [wrapper](../../src/services/gemini.ts#L91) passes an abort
+  signal and timeout to `files.upload`, while
+  [`runWithBounds`](../../src/utils/abort.ts#L32) can return before ignored work
+  settles. In the installed SDK, upload initialization does not receive the
+  caller's abort signal, and the subsequent file upload does not receive that
+  signal or the per-request HTTP options.
+- **Reproduced:** Using the real SDK with a fake transport that accepted upload
+  initialization, canceling during the chunk request returned
+  `OPERATION_CANCELLED`; the chunk request had no abort signal and completed
+  afterward. This test deliberately accepted initialization despite the P1
+  defect, so the cancellation problem remains relevant after P1 is fixed.
+- **Impact:** The caller can be told an operation was canceled or timed out
+  while media is still being transferred. This wastes bandwidth and can leave
+  provider-side media after the caller believes the transfer stopped; temporary
+  source cleanup can also race the still-running SDK work.
+- **Recommendation:** Ensure the actual initialization and every upload chunk
+  honor cancellation and deadlines using a verified SDK capability or another
+  supported upload implementation. Test the real transport boundary, including
+  cancellation during both stages and source lifetime during cleanup.
 
-### P2 — DNS resolution is not bounded by the download deadline or cancellation
+### P2 — Audio cover art is treated as a video stream
 
-- **Evidence:** [`downloadToFile`](../../src/utils/net.ts#L251) creates a timeout
-  signal, but awaits [`assertSafeHttpUrl`](../../src/utils/net.ts#L254) before
-  passing the signal to `fetch`. Its
-  [`lookup`](../../src/utils/net.ts#L205) has no cancellation or deadline;
-  [redirect validation](../../src/utils/net.ts#L320) has the same gap.
-- **Reproduced:** A controlled 300 ms DNS lookup, a 50 ms download timeout, and
-  cancellation after 10 ms returned `OPERATION_CANCELLED` only after about
-  329 ms. An already-cancelled request for a blocked loopback address returned
-  `URL_REJECTED` instead of cancellation.
-- **Impact:** Slow or stalled name resolution can delay cancellation and exceed
-  the advertised download budget; its error can also mask cancellation.
-- **Recommendation:** Apply the remaining deadline and caller cancellation to
-  every resolution/validation stage, classify their failures consistently, and
-  add delayed-DNS and pre-cancelled regression tests. Continue validating every
-  redirect.
+- **Status:** ✅ **Resolved.** `attached_pic` streams are excluded from video
+  detection and every extraction mode maps the probed stream index. Verified
+  with generated MP3 cover art and unit/integration tests covering cover-only,
+  cover-plus-video, and all four extraction modes.
+- **Evidence:** [Metadata selection](../../src/services/ffmpeg.ts#L148)
+  treats the first stream with `codec_type: video` as video without checking
+  `disposition.attached_pic`. [Frame extraction](../../src/operations/extractFrames.ts#L282)
+  relies on that classification and maps the first video stream.
+- **Reproduced:** A two-second MP3 with a single attached JPEG was reported as
+  `hasVideo: true`, with no audio-only warning. Timestamp extraction succeeded
+  and returned the album cover as a video frame.
+- **Impact:** Audio-only inputs can be misrepresented as videos, and extracted
+  stills can be presented as visual evidence from a recording. A real video
+  preceded by an attached picture can likewise select the wrong stream.
+- **Recommendation:** Exclude attached-picture streams when determining whether
+  motion video exists, and use the same selected stream for metadata and every
+  extraction mode. Add audio-with-cover and cover-plus-video fixtures, and
+  update the documented first-video-stream rule as appropriate.
 
-### P2 — Embedded MCP servers do not isolate logging
+### P3 — A remote image without Content-Type bypasses media-type validation
 
-- **Evidence:** Each [`createMcpServer`](../../src/adapters/mcpServer.ts#L36)
-  installs a process-global [`setLogSink`](../../src/utils/logger.ts#L33);
-  [closing any server](../../src/adapters/mcpServer.ts#L96) clears that global
-  sink. The server factory is part of the public embedding surface.
-- **Reproduced:** After creating servers A and B in one process, a logger
-  message associated with A was delivered to B's logging callback.
-- **Impact:** Multiple embedded servers, or an embedded server alongside other
-  users of the logger, can route diagnostics to the wrong client or lose MCP
-  logging when another server closes. Paths and operational details in
-  diagnostics can cross those boundaries.
-- **Recommendation:** Bind sinks to individual logger/server instances rather
-  than global state. Test two concurrent servers and closing either one.
+- **Status:** ✅ **Resolved.** The fallback MIME type must now be a media type,
+  so remote images are rejected with `UNSUPPORTED_INPUT` even when the server
+  omits `Content-Type`. Verified with a local HTTP server and a regression
+  test.
+- **Evidence:** [Local input validation](../../src/services/mediaInput.ts#L77)
+  requires an audio or video MIME type, but the
+  [downloaded-input fallback](../../src/services/mediaInput.ts#L110) accepts
+  any known extension when the response has no `Content-Type`. The MIME table
+  also includes image extensions.
+- **Reproduced:** A local HTTP server returned a JPEG at `sample.jpg` without a
+  `Content-Type` header. With private hosts explicitly enabled,
+  `get_video_info` accepted it as direct media and reported a video stream.
+- **Impact:** Non-media inputs can be reported as videos or sent to Gemini
+  under an image MIME type, unlike the same local file or a response explicitly
+  labeled `image/jpeg`.
+- **Recommendation:** Require the final inferred MIME type to pass
+  `isMediaMimeType`, regardless of whether it came from the response or URL.
+  Cover absent and generic content types with media and image extensions.
 
-### P3 — FFmpeg skip count in development documentation is stale
+## Additional risks and coverage
 
-- **Evidence:** The [README](../../README.md#L330) says 11 integration tests
-  are skipped without FFmpeg. The current run contains
-  [24 local-media tests](../../tests/integration/localMedia.test.ts#L22) plus
-  [one MCP test](../../tests/integration/mcpServer.test.ts#L97) guarded by the
-  shared FFmpeg/ffprobe availability check.
-- **Impact:** Developers may underestimate how much integration coverage was
-  skipped on a machine without both binaries.
-- **Recommendation:** Update the count or avoid a fixed count and instruct
-  readers to inspect the test runner's skipped-test summary.
-
-## Additional risks and coverage gaps
-
-- The README already correctly describes the
-  [DNS-rebinding window](../../src/utils/net.ts#L11): URL validation and the
-  eventual connection resolve separately. Treat the guard as defense in depth,
-  not a boundary against a determined attacker; consider connecting to a
-  validated address while preserving the original host and TLS verification.
-- Gemini upload cleanup removes local temporary media, but the
-  [Gemini API abstraction](../../src/services/gemini.ts#L36) has no remote
-  deletion operation; local files are uploaded on every request. Remote media
-  retention is therefore governed by the provider's file lifecycle, not local
-  cleanup. Document the retention policy and consider an explicit deletion
-  policy compatible with upload reuse.
-- Tests use injected or mocked Gemini APIs; this review did not make a live
-  provider request or validate the configured model, credentials, quotas, or
-  provider-side retention.
-- No tracked CI workflow was found in the repository. The checks below were run
-  on Windows with Node 26.11.1 and FFmpeg 9.0.2, not across the entire supported
-  Node 22+ range or all operating systems. A CI matrix with FFmpeg installed
-  would make those checks repeatable.
+- The previous review's resolved findings were not assumed to remain open.
+- Gemini request and response tests mostly use injected API doubles, and the SDK
+  response tests mock the SDK itself. The new upload transport tests use the
+  real SDK, but no live Gemini request was made, so credentials, model
+  availability, quotas, provider-side retention, and actual service responses
+  were not verified.
+- No CI workflow is tracked in this checkout. Repeat checks across supported
+  Node versions and operating systems with FFmpeg installed.
+- The README appropriately describes URL filtering as defense in depth and
+  documents provider-side media retention; this review did not establish a
+  security boundary for untrusted media.
 
 ## Verification
 
-| Check                  | Result                                                                                              |
-| ---------------------- | --------------------------------------------------------------------------------------------------- |
-| `npm test`             | Passed: 19 files, 287 tests passed, 1 skipped; FFmpeg integration tests ran.                        |
-| `npm run typecheck`    | Passed.                                                                                             |
-| `npm run lint`         | Passed.                                                                                             |
-| `npm run format:check` | Passed before this report was written.                                                              |
-| Targeted reproductions | Confirmed the four P2 behaviors described above using local fixtures, stubs, and injected services. |
+| Check                  | Result                                                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `npm run check`        | Passed after remediation: typecheck, lint, build, 21 test files, 307 tests passed and 1 skipped, and formatting.        |
+| Targeted reproductions | Confirmed all four findings before the fix and their absence after it, using generated media and local fake transports. |
+| Environment            | Windows, Node 26.11.1, FFmpeg/ffprobe 9.0.2, locked `@google/genai` 2.32.0.                                             |
 
-The single skipped test was platform/environment conditional. A passing suite
-does not establish that the live Gemini integration works or that every
-supported runtime has been exercised.
+A green suite does not establish that a real Gemini upload succeeds, or that
+other supported platforms and Node versions were exercised. The SDK transport is
+now tested against the locked SDK, but the provider response itself was not.

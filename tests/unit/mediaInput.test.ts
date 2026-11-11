@@ -258,6 +258,16 @@ describe('remote media input policy', () => {
     expect(mocks.execFile).not.toHaveBeenCalled()
   })
 
+  it('rejects a remote image that omits its Content-Type', async () => {
+    // A media extension is only a fallback; it must not turn an image into media.
+    fetchMock.mockResolvedValue(new Response('image bytes'))
+
+    await expect(resolveMediaInput('https://example.com/cover.jpg', config)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT',
+    })
+    expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
   it('rejects a download whose declared length exceeds the configured limit', async () => {
     fetchMock.mockResolvedValue(
       new Response('media', {
