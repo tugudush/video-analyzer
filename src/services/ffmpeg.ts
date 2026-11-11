@@ -149,6 +149,13 @@ export async function getMediaMetadata(
 }
 
 export interface FrameExtractionOptions {
+  /**
+   * Directory reserved for this extraction's frames.
+   *
+   * It must not already hold JPEGs: `even` and `interval` extraction list the
+   * directory afterwards, so a folder shared with an earlier run would report
+   * that run's frames as if this invocation had produced them.
+   */
   outDir: string
   /** Longest-edge cap in pixels; keeps MCP image payloads reasonable. */
   maxWidth?: number
@@ -204,6 +211,36 @@ function frameArgs(options: FrameExtractionOptions): string[] {
   return ['-vf', `scale=${width}:-2`, '-q:v', '3']
 }
 
+/**
+ * Refuse to extract into a directory that already holds frames.
+ *
+ * `even` and `interval` extraction build the result by listing the directory
+ * after ffmpeg writes into it, so a directory reused across runs would mix an
+ * earlier run's frames into this one and overwrite its numbered files. The
+ * caller picks the directory, so this is reported as `INVALID_INPUT`.
+ */
+async function assertEmptyFrameDir(dir: string): Promise<void> {
+  const entries = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[]
+    throw error
+  })
+  const existing = entries.filter((entry) => entry.endsWith('.jpg'))
+  if (existing.length === 0) return
+  throw invalidInput(
+    `The frame output directory already contains ${existing.length} JPEG file(s).`,
+    {
+      hint: 'Each extraction needs its own empty directory; use a new folder (or a new subfolder) per run.',
+      details: { outDir: dir, existingFrames: existing.length },
+    },
+  )
+}
+
+/**
+ * Frames written by the current extraction, in filename order.
+ *
+ * The directory is reserved for one run (see `assertEmptyFrameDir`), so every
+ * entry listed here was produced by this invocation.
+ */
 async function listFrames(dir: string): Promise<string[]> {
   const entries = await readdir(dir)
   return entries
@@ -220,6 +257,8 @@ export async function extractFramesEvenly(
   options: FrameExtractionOptions,
 ): Promise<string[]> {
   if (count <= 0) return []
+  await assertEmptyFrameDir(options.outDir)
+
   const duration =
     options.durationSeconds ??
     (await getMediaMetadata(filePath, config, options.signal)).durationSeconds
@@ -283,6 +322,7 @@ export async function extractFramesAtInterval(
       hint: `Received ${JSON.stringify(intervalSec)}. Use a larger interval or mode "even".`,
     })
   }
+  await assertEmptyFrameDir(options.outDir)
 
   const duration =
     options.durationSeconds ??

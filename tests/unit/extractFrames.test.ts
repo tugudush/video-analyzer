@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { extractFramesInput, extractFramesOperation } from '../../src/operations
 import {
   MAX_FRAMES_PER_EXTRACTION,
   MIN_INTERVAL_SEC,
+  extractFramesAtInterval,
   resolveFrameBudget,
 } from '../../src/services/ffmpeg.js'
 
@@ -113,6 +114,11 @@ function installFakes({ durationSeconds, sceneTimes = [] }: FakeMedia): {
   return { frameLimit: () => lastFrameLimit }
 }
 
+/** Folder this run wrote into: a new subfolder of the requested output directory. */
+function frameDirOf(data: unknown): string {
+  return (data as { outputDir: string }).outputDir
+}
+
 describe('extract_frames frame budgets', () => {
   let dir: string
   let source: string
@@ -141,7 +147,7 @@ describe('extract_frames frame budgets', () => {
 
     expect(frameLimit()).toBe('3')
     // 60 frames would fit the interval; only the budgeted three may exist.
-    expect(await readdir(outputDir)).toHaveLength(3)
+    expect(await readdir(frameDirOf(result.data))).toHaveLength(3)
     expect(result.images).toHaveLength(3)
     expect(result.data).toMatchObject({ totalFrames: 3, truncated: true })
     const warnings = result.warnings?.join(' ') ?? ''
@@ -161,7 +167,7 @@ describe('extract_frames frame budgets', () => {
     )
 
     // 600 frames would fit the interval, but the hard ceiling applies.
-    expect(await readdir(outputDir)).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
+    expect(await readdir(frameDirOf(result.data))).toHaveLength(MAX_FRAMES_PER_EXTRACTION)
     expect(result.data).toMatchObject({ totalFrames: MAX_FRAMES_PER_EXTRACTION, truncated: true })
     expect(result.warnings?.join(' ')).toContain('hard ceiling')
   })
@@ -210,7 +216,7 @@ describe('extract_frames frame budgets', () => {
       config,
     )
 
-    expect(await readdir(outputDir)).toHaveLength(5)
+    expect(await readdir(frameDirOf(result.data))).toHaveLength(5)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ totalFrames: 5, offset: 0, hasMore: true })
   })
@@ -303,6 +309,93 @@ describe('extract_frames frame budgets', () => {
         intervalSec: MIN_INTERVAL_SEC,
       }).success,
     ).toBe(true)
+  })
+})
+
+describe('extract_frames output directory isolation', () => {
+  let dir: string
+  let source: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-frames-'))
+    source = path.join(dir, 'sample.mp4')
+    await writeFile(source, 'placeholder media bytes')
+    mocks.execFile.mockReset()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reports only the frames written by the current run in a reused directory', async () => {
+    installFakes({ durationSeconds: 10 })
+    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '50' })
+    const outputDir = path.join(dir, 'frames')
+
+    const first = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, outputDir },
+      config,
+    )
+    expect(first.data).toMatchObject({ totalFrames: 10, truncated: false })
+
+    // A shorter clip into the same directory: the ten stale frames used to be
+    // counted as this run's output.
+    installFakes({ durationSeconds: 3 })
+    const second = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, outputDir },
+      config,
+    )
+
+    expect(second.data).toMatchObject({ totalFrames: 3, truncated: false })
+    expect(second.warnings ?? []).toHaveLength(0)
+
+    const firstDir = frameDirOf(first.data)
+    const secondDir = frameDirOf(second.data)
+    expect(secondDir).not.toBe(firstDir)
+    // The earlier run's frames are untouched and never reported by the new one.
+    expect(await readdir(firstDir)).toHaveLength(10)
+    expect(await readdir(secondDir)).toHaveLength(3)
+    for (const image of second.images ?? []) {
+      expect(image.path.startsWith(secondDir)).toBe(true)
+    }
+  })
+
+  it('does not count unrelated JPEGs in a reused directory', async () => {
+    installFakes({ durationSeconds: 4 })
+    const config = loadConfig({})
+    const outputDir = path.join(dir, 'frames')
+    await mkdir(outputDir, { recursive: true })
+    await writeFile(path.join(outputDir, 'screenshot.jpg'), 'not a frame')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 2, outputDir },
+      config,
+    )
+
+    expect(result.data).toMatchObject({ totalFrames: 2, truncated: false })
+    // The unrelated image stays where it was and is not part of the result.
+    expect((await readdir(outputDir)).filter((entry) => entry.endsWith('.jpg'))).toEqual([
+      'screenshot.jpg',
+    ])
+  })
+
+  it('rejects a frame directory that already holds frames', async () => {
+    installFakes({ durationSeconds: 5 })
+    const config = loadConfig({})
+    const outDir = path.join(dir, 'dirty')
+    await mkdir(outDir, { recursive: true })
+    await writeFile(path.join(outDir, 'frame-0001.jpg'), 'stale frame')
+
+    await expect(
+      extractFramesAtInterval(source, 1, config, { outDir, durationSeconds: 5, maxFrames: 10 }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    // The stale frame is left alone and ffmpeg never ran.
+    expect(await readdir(outDir)).toEqual(['frame-0001.jpg'])
+    expect(mocks.execFile.mock.calls.filter(([file]) => file === 'ffmpeg')).toHaveLength(0)
   })
 })
 

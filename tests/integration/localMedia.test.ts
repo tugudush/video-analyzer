@@ -11,6 +11,11 @@ import { createSampleAudio, createSampleVideo, ffmpegAvailable } from '../helper
 
 const available = await ffmpegAvailable()
 
+/** Folder a run wrote into: every extraction gets its own subfolder. */
+function runDir(data: unknown): string {
+  return (data as { outputDir: string }).outputDir
+}
+
 describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
   let workDir: string
   let config: ReturnType<typeof loadConfig>
@@ -121,10 +126,34 @@ describe.skipIf(!available)('local media operations (requires ffmpeg)', () => {
     )
 
     // A 4s clip at one frame per half second would produce eight frames.
-    expect(await readdir(outputDir)).toHaveLength(2)
+    expect(await readdir(runDir(result.data))).toHaveLength(2)
     expect(result.images).toHaveLength(2)
     expect(result.data).toMatchObject({ mode: 'interval', totalFrames: 2, truncated: true })
     expect(result.warnings?.join(' ')).toContain('2-frame budget')
+  })
+
+  it('keeps a reused output directory free of earlier frames', async () => {
+    const sample = await createSampleVideo(workDir)
+    const outputDir = path.join(workDir, 'frames-reused')
+
+    const first = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample.path, mode: 'even', count: 6, outputDir },
+      config,
+    )
+    const second = await executeOperation(
+      extractFramesOperation,
+      { videoPath: sample.path, mode: 'even', count: 2, outputDir },
+      config,
+    )
+
+    expect(first.data).toMatchObject({ totalFrames: 6 })
+    // The shorter run reports only its own two frames, not the earlier six.
+    expect(second.data).toMatchObject({ totalFrames: 2, hasMore: false })
+    expect(second.images).toHaveLength(2)
+    expect(runDir(second.data)).not.toBe(runDir(first.data))
+    expect(await readdir(runDir(first.data))).toHaveLength(6)
+    expect(await readdir(runDir(second.data))).toHaveLength(2)
   })
 
   it('detects scene changes', async () => {
