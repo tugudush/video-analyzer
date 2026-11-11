@@ -78,13 +78,13 @@ verbatim. No silent model substitution happens.
 
 ## Limits
 
-| Variable                            | Default  | Purpose                                                                                                                               |
-| ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_MAX_FRAMES`         | `100`    | Frame ceiling for AI-assisted sampling and scene detection budgets. `0` removes the frame ceiling; basic resource guards still apply. |
-| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | `2048`   | Maximum size of a remote download.                                                                                                    |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | `300000` | Gemini request timeout.                                                                                                               |
-| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`  | `600000` | How long to wait for uploads to become `ACTIVE`.                                                                                      |
-| `VIDEO_ANALYZER_POLL_INTERVAL_MS`   | `2000`   | Upload status poll interval.                                                                                                          |
+| Variable                            | Default  | Purpose                                                                                                                                                                                                                                  |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_MAX_FRAMES`         | `100`    | Frame budget for AI-assisted sampling, scene detection, and `extract_frames` `interval` mode. `0` removes the configured ceiling, but a 500-frame hard ceiling per extraction still applies, and scene mode is capped at 200 regardless. |
+| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | `2048`   | Maximum size of a remote download.                                                                                                                                                                                                       |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | `300000` | Gemini request timeout.                                                                                                                                                                                                                  |
+| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`  | `600000` | How long to wait for uploads to become `ACTIVE`.                                                                                                                                                                                         |
+| `VIDEO_ANALYZER_POLL_INTERVAL_MS`   | `2000`   | Upload status poll interval.                                                                                                                                                                                                             |
 
 ## Output
 

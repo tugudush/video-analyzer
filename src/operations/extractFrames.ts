@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { ensureDir } from '../utils/fsUtils.js'
 import {
+  MAX_FRAMES_PER_EXTRACTION,
+  MAX_SCENE_FRAMES,
+  MIN_INTERVAL_SEC,
   extractFramesAtInterval,
   extractFramesAtTimestamps,
   extractFramesEvenly,
@@ -26,14 +29,19 @@ export const extractFramesInput = z.object({
     .number()
     .int()
     .min(1)
-    .max(500)
+    .max(MAX_FRAMES_PER_EXTRACTION)
     .optional()
     .describe('For mode "even": how many frames to extract. Default 5.'),
   intervalSec: z
     .number()
-    .positive()
+    .min(
+      MIN_INTERVAL_SEC,
+      `intervalSec must be at least ${MIN_INTERVAL_SEC} seconds; use mode "even" for denser sampling.`,
+    )
     .optional()
-    .describe('For mode "interval": seconds between frames.'),
+    .describe(
+      `For mode "interval": seconds between frames, ${MIN_INTERVAL_SEC} or more. Extraction stops at the configured frame budget (VIDEO_ANALYZER_MAX_FRAMES, hard ceiling 500).`,
+    ),
   timestamps: z
     .array(z.number().min(0))
     .max(100)
@@ -111,25 +119,43 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
 
       let paths: string[] = []
       const timestamps: number[] = []
+      let truncated = false
+      let intervalStats: { expectedFrames: number; frameBudget: number } | undefined
 
       if (mode === 'even') {
         // `count` defines the whole frame set; pagination pages through it, so
         // extraction is never trimmed to the current page.
         paths = await extractFramesEvenly(prepared.path, input.count ?? DEFAULT_COUNT, ctx.config, {
           outDir,
+          durationSeconds: prepared.metadata.durationSeconds,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
         })
       } else if (mode === 'interval') {
-        paths = await extractFramesAtInterval(
-          prepared.path,
-          input.intervalSec as number,
-          ctx.config,
-          {
-            outDir,
-            ...(ctx.signal ? { signal: ctx.signal } : {}),
-          },
-        )
-        paths.forEach((_, index) => timestamps.push(index * (input.intervalSec as number)))
+        const intervalSec = input.intervalSec as number
+        const result = await extractFramesAtInterval(prepared.path, intervalSec, ctx.config, {
+          outDir,
+          durationSeconds: prepared.metadata.durationSeconds,
+          maxFrames: ctx.config.maxFrames,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        })
+        paths = result.paths
+        truncated = result.truncated
+        intervalStats = { expectedFrames: result.expectedFrames, frameBudget: result.frameBudget }
+        paths.forEach((_, index) => timestamps.push(index * intervalSec))
+        if (result.truncated) {
+          // `0` and any value at or above the hard ceiling both end up at the
+          // ceiling, where raising the setting would change nothing.
+          const atHardCeiling =
+            result.frameBudget === MAX_FRAMES_PER_EXTRACTION &&
+            (ctx.config.maxFrames <= 0 || ctx.config.maxFrames >= MAX_FRAMES_PER_EXTRACTION)
+          warnings.push(
+            `intervalSec ${intervalSec} would produce about ${result.expectedFrames} frames over ${prepared.metadata.durationSeconds.toFixed(1)}s; extraction stopped after ${paths.length} frames against the ${result.frameBudget}-frame budget. ${
+              atHardCeiling
+                ? 'That is the hard ceiling per extraction, so use a larger intervalSec or mode "even" to cover the whole clip.'
+                : 'Raise VIDEO_ANALYZER_MAX_FRAMES, use a larger intervalSec, or use mode "even" for a fixed spread.'
+            }`,
+          )
+        }
       } else if (mode === 'timestamps') {
         const requested = input.timestamps as number[]
         paths = await extractFramesAtTimestamps(prepared.path, requested, ctx.config, {
@@ -139,21 +165,24 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         timestamps.push(...requested)
       } else {
         const sceneBudget = ctx.config.maxFrames > 0 ? ctx.config.maxFrames : 0
+        const sceneLimit =
+          sceneBudget > 0 ? Math.min(sceneBudget, MAX_SCENE_FRAMES) : MAX_SCENE_FRAMES
         const result = await extractSceneFrames(
           prepared.path,
           input.sceneThreshold ?? DEFAULT_SCENE_THRESHOLD,
           ctx.config,
           {
             outDir,
-            maxFrames: sceneBudget > 0 ? Math.min(sceneBudget, 200) : 200,
+            maxFrames: sceneLimit,
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           },
         )
         paths = result.paths
+        truncated = result.truncated
         timestamps.push(...result.timestamps)
         if (result.truncated) {
           warnings.push(
-            `Scene detection produced more frames than the ${sceneBudget || 200}-frame safety ceiling; the list was truncated.`,
+            `Scene detection produced more frames than the ${sceneLimit}-frame safety ceiling; the list was truncated.`,
           )
         }
       }
@@ -162,7 +191,16 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         return {
           summary:
             'No frames were extracted. The video may be shorter than the sampling interval, or no scene changes exceeded the threshold.',
-          data: { mode, outputDir: outDir, frames: [], totalFrames: 0, offset, hasMore: false },
+          data: {
+            mode,
+            outputDir: outDir,
+            frames: [],
+            totalFrames: 0,
+            offset,
+            hasMore: false,
+            truncated,
+            ...intervalStats,
+          },
           images: [],
           warnings,
         }
@@ -195,6 +233,8 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
           totalFrames: paths.length,
           offset,
           hasMore,
+          truncated,
+          ...intervalStats,
           ...(pageTimestamps.length > 0 ? { timestamps: pageTimestamps } : {}),
         },
         images,

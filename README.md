@@ -248,20 +248,20 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 
 ## Configuration
 
-| Variable                             | Default              | Purpose                                   |
-| ------------------------------------ | -------------------- | ----------------------------------------- |
-| `GEMINI_API_KEY`                     | —                    | Required for AI operations                |
-| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                    |
-| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | AI frame ceiling; `0` removes the ceiling |
-| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Gemini request timeout                    |
-| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Upload → `ACTIVE` timeout                 |
-| `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval               |
-| `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts    |
-| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts        |
-| `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`    |
-| `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher       |
-| `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                  |
+| Variable                             | Default              | Purpose                                                                                               |
+| ------------------------------------ | -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                            |
+| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                |
+| `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for sampling and extraction (scene capped at 200); `0` keeps only the 500-frame hard cap |
+| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                            |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Gemini request timeout                                                                                |
+| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Upload → `ACTIVE` timeout                                                                             |
+| `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval                                                                           |
+| `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts                                                                |
+| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts                                                                    |
+| `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`                                                                |
+| `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher                                                                   |
+| `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                                                                              |
 
 The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 

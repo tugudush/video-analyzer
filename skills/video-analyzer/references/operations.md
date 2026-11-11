@@ -164,7 +164,7 @@ Write JPEG frames to disk. No AI, no API key.
 | `videoPath`      | string                                          | yes                       | Must contain a video stream        |
 | `mode`           | `even` \| `interval` \| `timestamps` \| `scene` | no                        | Default `even`                     |
 | `count`          | integer 1–500                                   | no                        | `even` mode, default 5             |
-| `intervalSec`    | number > 0                                      | required for `interval`   | Seconds between frames             |
+| `intervalSec`    | number ≥ 0.1                                    | required for `interval`   | Seconds between frames             |
 | `timestamps`     | number[]                                        | required for `timestamps` | Seconds, max 100 entries           |
 | `sceneThreshold` | number 0.05–0.95                                | no                        | `scene` mode, default 0.35         |
 | `maxImages`      | integer 1–100                                   | no                        | Page size, default 20              |
@@ -178,6 +178,23 @@ node ./scripts/invoke.mjs extract_frames '{"videoPath":"./demo.mp4","mode":"inte
 
 `images[]` lists every returned JPEG with an absolute `path` and a `t=` label
 where a timestamp is known. `data.hasMore` indicates another page exists.
+
+`interval` mode stops at the frame budget (`VIDEO_ANALYZER_MAX_FRAMES`, default
+100, hard ceiling 500) while ffmpeg is writing, starting from `t=0`. When the
+interval would produce more frames than that, only the first `budget` frames are
+written, the response adds a warning and `data.truncated: true`, and the pages
+describe that shorter list. `maxImages` limits the returned page, never how many
+frames are produced.
+
+`interval` mode also reports `data.expectedFrames` (how many frames the interval
+would produce across the whole media) and `data.frameBudget` (the budget that was
+applied), so a caller can decide whether to re-run without parsing the warning.
+`data.truncated` is `true` whenever the written frames do not cover the whole
+media at the requested interval. In `scene` mode it means the list hit the scene
+ceiling (200 frames, or the configured budget when smaller).
+
+Ceilings per extraction: `even` and `interval` stop at 500 frames, `scene` at
+200, and `timestamps` at 100 entries. No input raises these.
 
 Frames are written into a folder under the working directory (or
 `VIDEO_ANALYZER_OUTPUT_DIR`). They are not deleted.
