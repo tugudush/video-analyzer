@@ -202,4 +202,24 @@ describe('remote media input policy', () => {
       message: expect.stringMatching(/exceeded the download size limit while streaming/),
     })
   })
+
+  it('identifies a remote source stably across separate downloads', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('media', { headers: { 'content-type': 'video/mp4' } }),
+    )
+
+    const url = 'https://example.com/media.mp4'
+    const first = await resolveMediaInput(url, config)
+    const second = await resolveMediaInput(url, config)
+    try {
+      // Separate temp directories, same identity: this is what lets the upload
+      // cache reuse a second call for the same URL.
+      expect(first.path).not.toBe(second.path)
+      expect(first.cacheKey).toBeDefined()
+      expect(second.cacheKey).toBe(first.cacheKey)
+    } finally {
+      await first.cleanup()
+      await second.cleanup()
+    }
+  })
 })

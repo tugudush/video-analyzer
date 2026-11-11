@@ -15,6 +15,12 @@ export interface ResolvedMedia {
   source: MediaSource
   mimeType: string
   sizeBytes: number
+  /**
+   * Stable identity of where the bytes came from, when the local path is not
+   * stable. A direct download lands in a new temp directory per call, so the
+   * Gemini upload cache uses this instead of the path to recognise the source.
+   */
+  cacheKey?: string
   /** Set when we created a temp working directory that the caller should remove. */
   tempDir: string | null
   /** Removes the temp directory (no-op for caller-owned local files). */
@@ -64,8 +70,8 @@ async function statFile(filePath: string): Promise<{ size: number }> {
   return { size: info.size }
 }
 
-function resolveMimeType(filePath: string, override?: string): string {
-  const mimeType = override ?? mimeTypeFromPath(filePath)
+function resolveMimeType(filePath: string): string {
+  const mimeType = mimeTypeFromPath(filePath)
   if (!mimeType || !isMediaMimeType(mimeType)) {
     throw new VideoAnalyzerError(
       'UNSUPPORTED_INPUT',
@@ -126,6 +132,7 @@ async function resolveDirect(
       source: 'direct',
       mimeType,
       sizeBytes: result.bytesWritten,
+      cacheKey: `direct:${result.finalUrl}:${result.bytesWritten}`,
       tempDir,
       cleanup: () => removeDir(tempDir),
     }

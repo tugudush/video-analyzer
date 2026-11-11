@@ -15,7 +15,12 @@ cloud API, switch to a local operation:
 
 ## DEPENDENCY_MISSING
 
-`ffmpeg is required but was not found on PATH.`
+`ffmpeg is required but was not found on PATH.` — no binary matched, so FFmpeg is
+not installed or not on `PATH`.
+
+`The configured media binary was not found: <path>` — `FFMPEG_PATH` or
+`FFPROBE_PATH` points at something that does not exist. Fix the setting; note
+that those two settings are read from the environment only, never from `.env`.
 
 Install FFmpeg, then either put it on `PATH` or point at it:
 
@@ -135,11 +140,16 @@ back as `INVALID_INPUT` naming the value and the clip length instead.
 
 ## OUTPUT_FAILED
 
-The transcript was generated but could not be written to `outputPath` (for
-example `ENOSPC`, `EACCES`, or a read-only volume). `details.outputPath` names the
-target and `details.code` the OS error. Choose a writable path or free disk space
-and re-run; re-transcribing is not required to know the text, which is also
-returned in the response summary.
+Writing something the caller asked for failed. Two cases:
+
+- `Could not create the artifact directory` — `extract_frames` could not create its
+  output folder. `details.outputDir` (or `details.outputRoot`) names the base that
+  failed and `details.code` the OS error; a common cause is passing a file where a
+  directory is expected, or a read-only volume. Choose a writable directory.
+- A transcript that could not be written is **not** an error: the operation still
+  returns the text in `summary` and adds a warning naming the target and the OS
+  error, with `data.outputWritten: false`. Re-run with a writable `outputPath`
+  only if the file is needed; re-transcribing is required in that case.
 
 ## OPERATION_CANCELLED
 

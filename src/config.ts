@@ -76,13 +76,45 @@ function readString(env: NodeJS.ProcessEnv, name: string): string | undefined {
   return trimmed === '' ? undefined : trimmed
 }
 
+/**
+ * Settings a `.env` file may supply.
+ *
+ * `.env` is read from the working directory, which in the Skill workflow is
+ * whatever repository the agent is working in. Treating it as untrusted means a
+ * repository-supplied file cannot point `execFile` at a bundled binary
+ * (`FFMPEG_PATH` / `FFPROBE_PATH`), rewrite `PATH`, or disable the private-host
+ * guard. Anything not listed here must come from the real environment.
+ */
+export const DOTENV_KEYS = [
+  'GEMINI_API_KEY',
+  'GEMINI_MODEL',
+  'VIDEO_ANALYZER_MAX_FRAMES',
+  'VIDEO_ANALYZER_DOWNLOAD_MAX_MB',
+  'VIDEO_ANALYZER_REQUEST_TIMEOUT_MS',
+  'VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS',
+  'VIDEO_ANALYZER_POLL_INTERVAL_MS',
+  'VIDEO_ANALYZER_OUTPUT_DIR',
+  'VIDEO_ANALYZER_LOG_LEVEL',
+] as const
+
+/**
+ * Apply a `.env` file to `target`, limited to the keys a repository may choose.
+ *
+ * @returns The names of the variables that were actually applied.
+ */
+export function applyDotEnv(target: NodeJS.ProcessEnv, filePath?: string): string[] {
+  return loadDotEnvInto(target, filePath, { allowKeys: DOTENV_KEYS })
+}
+
 export interface LoadConfigOptions {
   /**
    * Path to a `.env` file. Defaults to `.env` in the working directory.
    * Pass `null` to disable loading entirely.
    *
    * Only applied when reading the real process environment, so callers that pass
-   * an explicit env object (tests, embedders) are never affected.
+   * an explicit env object (tests, embedders) are never affected. Only
+   * {@link DOTENV_KEYS} may be set this way; the file cannot choose the media
+   * binaries, rewrite `PATH`, or disable the private-host guard.
    */
   dotenvFile?: string | null
 }
@@ -93,7 +125,7 @@ export function loadConfig(
   options: LoadConfigOptions = {},
 ): Config {
   if (env === process.env && options.dotenvFile !== null) {
-    loadDotEnvInto(env, options.dotenvFile ?? path.join(process.cwd(), '.env'))
+    applyDotEnv(env, options.dotenvFile ?? path.join(process.cwd(), '.env'))
   }
 
   // `YT_DLP_*` settings are deliberately unread: platform page downloads are

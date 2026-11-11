@@ -223,7 +223,6 @@ export interface DownloadOptions extends UrlSafetyOptions {
   maxBytes: number
   timeoutMs: number
   signal?: AbortSignal
-  headers?: Record<string, string>
 }
 
 /** Download a remote resource to `destPath` with size, timeout, and SSRF guards. */
@@ -280,7 +279,7 @@ export async function downloadToFile(
       attempt = await fetch(current, {
         redirect: 'manual',
         signal,
-        headers: { 'user-agent': 'video-analyzer', ...options.headers },
+        headers: { 'user-agent': 'video-analyzer' },
       })
     } catch (error) {
       throw classifyDownloadFailure(error, 'download')

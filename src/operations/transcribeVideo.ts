@@ -2,10 +2,10 @@ import { stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
-import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
+import { VideoAnalyzerError, invalidInput, toVideoAnalyzerError } from '../utils/errors.js'
 import { ensureDir, isSameFile } from '../utils/fsUtils.js'
 import { assertGeminiAvailable, getGeminiService, prepareMedia, statForUpload } from './shared.js'
-import type { Operation } from './types.js'
+import type { Artifact, Operation } from './types.js'
 
 export const transcribeVideoInput = z.object({
   videoPath: z
@@ -188,13 +188,12 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
       if (target && !sourcePath) await assertNotSourceAlias(target, prepared.path)
 
       const service = getGeminiService(ctx)
-      const { sizeBytes, mtimeMs } = await statForUpload(prepared.media)
+      const upload = await statForUpload(prepared.media)
 
       const transcript = await service.generateWithFile({
         path: prepared.path,
         mimeType: prepared.media.mimeType,
-        sizeBytes,
-        mtimeMs,
+        ...upload,
         prompt: buildPrompt(input.language, input.translateToEnglish ?? false),
         systemInstruction: TRANSCRIBE_SYSTEM_INSTRUCTION,
         temperature: 0.1,
@@ -203,21 +202,36 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
       })
 
       const text = transcript.trim()
-      const noSpeech = /\bNO_SPEECH\b/.test(text)
+      // An empty reply is not a transcript: `generateWithFile` only rejects a
+      // missing response body, so a whitespace-only answer reaches this point.
+      const noSpeech = text === '' || /\bNO_SPEECH\b/.test(text)
       const warnings: string[] = []
+      const artifacts: Artifact[] = []
 
       if (noSpeech) {
         warnings.push('Gemini reported no audible speech in this media.')
       }
 
-      const artifacts = []
       if (target && !noSpeech) {
-        await writeTranscript(target, `${text}\n`, input.overwrite ?? false)
-        artifacts.push({
-          path: target,
-          kind: 'transcript' as const,
-          mimeType: 'text/plain',
-        })
+        try {
+          await writeTranscript(target, `${text}\n`, input.overwrite ?? false)
+          artifacts.push({
+            path: target,
+            kind: 'transcript',
+            mimeType: 'text/plain',
+          })
+        } catch (error) {
+          // The transcript is the result; the file is a convenience. Losing the
+          // text because the write failed would throw away the whole generation,
+          // so the failure is reported as a warning next to the returned text.
+          const failure = toVideoAnalyzerError(error)
+          const code = failure.details?.['code']
+          warnings.push(
+            `The transcript was not written to ${target}: ${failure.message}${
+              typeof code === 'string' ? ` (${code})` : ''
+            }${failure.hint ? ` ${failure.hint}` : ''}`,
+          )
+        }
       }
 
       if (prepared.metadata.hasAudio === false) {
@@ -232,6 +246,7 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
           noSpeech,
           durationSeconds: prepared.metadata.durationSeconds,
           characters: text.length,
+          ...(target ? { outputPath: target, outputWritten: artifacts.length > 0 } : {}),
         },
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(artifacts.length > 0 ? { artifacts } : {}),

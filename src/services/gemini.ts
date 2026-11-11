@@ -181,6 +181,12 @@ export interface EnsureUploadedParams {
   mimeType: string
   sizeBytes: number
   mtimeMs: number
+  /**
+   * Stable source identity. Supply it when `path` is not stable for the same
+   * bytes (a direct download writes into a new temp directory per call), so the
+   * cache can still recognise a repeat request.
+   */
+  cacheKey?: string
   signal?: AbortSignal
   onProgress?: (message: string) => void
 }
@@ -245,7 +251,10 @@ export class GeminiMediaService {
   }
 
   private cacheKey(params: EnsureUploadedParams): string {
-    return `${params.path}\u0000${params.sizeBytes}\u0000${Math.round(params.mtimeMs)}`
+    return (
+      params.cacheKey ??
+      `${params.path}\u0000${params.sizeBytes}\u0000${Math.round(params.mtimeMs)}`
+    )
   }
 
   /** Upload once per source file, coalescing concurrent callers. */

@@ -1,8 +1,15 @@
-import { mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const TEMP_PREFIX = 'video-analyzer-'
+
+/**
+ * Prefix of the payload files the Skill launcher stages for a Windows `.cmd`
+ * shim. They hold media paths and questions, so a killed launcher must not leave
+ * them behind indefinitely.
+ */
+const LAUNCHER_PAYLOAD_PREFIX = 'video-analyzer-input-'
 
 /** Create a per-request working directory under the OS temp directory. */
 export async function createTempDir(): Promise<string> {
@@ -16,8 +23,8 @@ export async function removeDir(dir: string | null | undefined): Promise<void> {
 }
 
 /**
- * Best-effort cleanup of temp directories left behind by a process that was
- * killed mid-operation.
+ * Best-effort cleanup of temp directories and launcher payload files left behind
+ * by a process that was killed mid-operation.
  */
 export async function sweepStaleTempDirs(maxAgeMs = 24 * 60 * 60 * 1000): Promise<void> {
   const base = tmpdir()
@@ -36,7 +43,12 @@ export async function sweepStaleTempDirs(maxAgeMs = 24 * 60 * 60 * 1000): Promis
         const full = path.join(base, entry)
         try {
           const info = await stat(full)
-          if (info.isDirectory() && info.mtimeMs < cutoff) await removeDir(full)
+          if (info.mtimeMs >= cutoff) return
+          if (info.isDirectory()) {
+            await removeDir(full)
+          } else if (entry.startsWith(LAUNCHER_PAYLOAD_PREFIX) && entry.endsWith('.json')) {
+            await rm(full, { force: true }).catch(() => undefined)
+          }
         } catch {
           // Ignore races with other processes.
         }
@@ -46,7 +58,6 @@ export async function sweepStaleTempDirs(maxAgeMs = 24 * 60 * 60 * 1000): Promis
 
 /** Create a directory (recursively) if it does not exist yet. */
 export async function ensureDir(dir: string): Promise<void> {
-  const { mkdir } = await import('node:fs/promises')
   await mkdir(dir, { recursive: true })
 }
 

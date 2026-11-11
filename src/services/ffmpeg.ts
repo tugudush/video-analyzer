@@ -81,9 +81,19 @@ async function run(
 
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'ENOENT') {
-      throw dependencyMissing(`${binary} is required but was not found on PATH.`, {
-        hint: 'Install FFmpeg (https://ffmpeg.org/download.html) or set FFMPEG_PATH / FFPROBE_PATH.',
-      })
+      // A bare name is resolved through PATH; anything with a separator came from
+      // FFMPEG_PATH / FFPROBE_PATH, and saying "on PATH" would send the user to
+      // fix the wrong thing.
+      const configured = binary.includes('/') || binary.includes('\\')
+      throw dependencyMissing(
+        configured
+          ? `The configured media binary was not found: ${binary}`
+          : `${binary} is required but was not found on PATH.`,
+        {
+          hint: 'Install FFmpeg (https://ffmpeg.org/download.html) or set FFMPEG_PATH / FFPROBE_PATH to the full path of the executable.',
+          details: { binary },
+        },
+      )
     }
 
     const killed = (error as { killed?: boolean }).killed === true

@@ -5,6 +5,7 @@ import { requireGeminiApiKey, type Config } from '../config.js'
 import { GeminiMediaService } from '../services/gemini.js'
 import { getMediaMetadata, type MediaMetadata } from '../services/ffmpeg.js'
 import { resolveMediaInput, type ResolvedMedia } from '../services/mediaInput.js'
+import { VideoAnalyzerError } from '../utils/errors.js'
 import { ensureDir } from '../utils/fsUtils.js'
 import type { OperationContext } from './types.js'
 
@@ -75,11 +76,31 @@ export async function prepareMedia(
   }
 }
 
-export async function statForUpload(
-  media: ResolvedMedia,
-): Promise<{ sizeBytes: number; mtimeMs: number }> {
+/** Upload identity for one resolved source: what Gemini needs to cache it. */
+export interface UploadIdentity {
+  sizeBytes: number
+  mtimeMs: number
+  /**
+   * Stable source identity when the local path is not stable (a direct download
+   * lands in a new temp directory on every call).
+   */
+  cacheKey?: string
+}
+
+/**
+ * Describe a resolved source for the Gemini upload cache.
+ *
+ * Local files are identified by path plus size and mtime. A downloaded copy is
+ * identified by its origin instead, so repeated calls for the same URL reuse one
+ * upload rather than uploading the same bytes again under a new temp path.
+ */
+export async function statForUpload(media: ResolvedMedia): Promise<UploadIdentity> {
   const info = await stat(media.path)
-  return { sizeBytes: info.size, mtimeMs: info.mtimeMs }
+  return {
+    sizeBytes: info.size,
+    mtimeMs: info.mtimeMs,
+    ...(media.cacheKey ? { cacheKey: media.cacheKey } : {}),
+  }
 }
 
 /**
@@ -90,6 +111,10 @@ export async function statForUpload(
  * configured artifact root, which lets an operation treat a caller-supplied
  * directory as a parent and still get a fresh folder per run. Both roots are
  * resolved against the working directory, so the returned path is absolute.
+ *
+ * A base that cannot be created is a caller problem (a file where a directory is
+ * expected, a read-only volume), so it is reported as `OUTPUT_FAILED` with the
+ * setting that produced it instead of leaking a raw `ENOTDIR` as `INTERNAL`.
  */
 export async function createArtifactDir(
   config: Config,
@@ -100,7 +125,25 @@ export async function createArtifactDir(
     baseDir ?? path.join(config.outputDir ?? process.cwd(), 'video-analyzer-output'),
   )
   const dir = path.join(base, `${prefix}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
-  await ensureDir(dir)
+  try {
+    await ensureDir(dir)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    throw new VideoAnalyzerError(
+      'OUTPUT_FAILED',
+      `Could not create the artifact directory: ${base}`,
+      {
+        hint: baseDir
+          ? 'Pass "outputDir" as a writable directory (it may not be an existing file).'
+          : 'Set VIDEO_ANALYZER_OUTPUT_DIR to a writable directory and retry.',
+        details: {
+          ...(baseDir ? { outputDir: base } : { outputRoot: base }),
+          ...(code ? { code } : {}),
+        },
+        cause: error,
+      },
+    )
+  }
   return dir
 }
 

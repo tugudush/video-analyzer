@@ -27,13 +27,12 @@ export const analyzeVideoOperation: Operation<typeof analyzeVideoInput> = {
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)
-      const { sizeBytes, mtimeMs } = await statForUpload(prepared.media)
+      const upload = await statForUpload(prepared.media)
 
       const answer = await service.generateWithFile({
         path: prepared.path,
         mimeType: prepared.media.mimeType,
-        sizeBytes,
-        mtimeMs,
+        ...upload,
         prompt: input.question,
         systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
         ...(ctx.signal ? { signal: ctx.signal } : {}),

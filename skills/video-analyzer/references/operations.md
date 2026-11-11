@@ -98,6 +98,11 @@ Returns `data.matches[]` with `startSeconds`, optional `endSeconds`, and a
 `description`. When the model does not follow the `MATCH` format,
 `data.raw` holds its prose answer and a warning is added.
 
+Every result includes `data.durationSeconds`, and `data.raw` is always present for
+a no-match or unparsed answer so the model's own wording is not lost. A match whose
+start is past the end of the clip cannot be real, so it is reported with a warning
+rather than silently trusted.
+
 Reads `NO_MATCH` as "not found". Always relay the estimate warning.
 Verify a candidate time with `extract_frames` before cutting anything.
 
@@ -132,6 +137,12 @@ missing parent directories are created. `overwrite` only applies when `outputPat
 set, so re-running an example that writes to the same `.txt` needs `overwrite: true`.
 
 If nothing is spoken, `data.noSpeech` is `true` and the summary says so.
+
+The transcript is the result; `outputPath` is a convenience. If the write fails
+(full disk, read-only volume, a directory in the way), the operation still returns
+the text in `summary`, adds a warning naming the target and the OS error, and
+reports `data.outputWritten: false` with no `artifacts` entry. When it succeeds,
+`data.outputWritten` is `true` and `artifacts[]` names the file.
 
 ---
 
@@ -197,7 +208,13 @@ first ffmpeg call. A value at or beyond the end of the clip is rejected as
 `INVALID_INPUT` with the offending value and the duration in the message, instead
 of failing the run and stranding the frames the valid values produced. If an
 extraction fails for any other reason, the artifact folder created for the
-request is removed, so a reported `outputDir` always contains a complete set.
+request is removed on a best-effort basis, so a reported `outputDir` contains a
+complete set.
+
+An `offset` at or past `data.totalFrames` returns no images, `hasMore: false`, and
+a summary saying the page is past the frames this request produced. An `outputDir`
+(or `VIDEO_ANALYZER_OUTPUT_DIR`) that cannot be created is `OUTPUT_FAILED` naming
+the setting, not an internal error.
 
 `interval` mode also reports `data.expectedFrames` (how many frames the interval
 would produce across the whole media) and `data.frameBudget` (the budget that was

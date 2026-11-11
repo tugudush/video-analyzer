@@ -163,6 +163,30 @@ describe('GeminiMediaService', () => {
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
   })
 
+  it('reuses one upload when a stable cache key identifies the source', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    const cacheKey = 'direct:https://example.com/talk.mp4:1024'
+
+    // A direct download lands in a new temp directory on every call, so only the
+    // supplied identity can recognise that both paths hold the same bytes.
+    await service.ensureUploaded({ ...uploadParams, path: '/tmp/run-a/source.media', cacheKey })
+    api.getFile.mockResolvedValueOnce(handle({ state: 'ACTIVE' }))
+    await service.ensureUploaded({ ...uploadParams, path: '/tmp/run-b/source.media', cacheKey })
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps differently identified sources apart even at the same size', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+
+    await service.ensureUploaded({ ...uploadParams, cacheKey: 'direct:https://example.com/a.mp4' })
+    await service.ensureUploaded({ ...uploadParams, cacheKey: 'direct:https://example.com/b.mp4' })
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces concurrent uploads of the same file', async () => {
     const api = createFakeApi()
     const service = createService(api)

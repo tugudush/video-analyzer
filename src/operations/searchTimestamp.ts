@@ -90,13 +90,12 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)
-      const { sizeBytes, mtimeMs } = await statForUpload(prepared.media)
+      const upload = await statForUpload(prepared.media)
 
       const response = await service.generateWithFile({
         path: prepared.path,
         mimeType: prepared.media.mimeType,
-        sizeBytes,
-        mtimeMs,
+        ...upload,
         prompt: SEARCH_PROMPT(input.query),
         systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
         temperature: 0.2,
@@ -105,6 +104,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
       })
 
       const matches = parseTimestampMatches(response)
+      const durationSeconds = prepared.metadata.durationSeconds
       const warnings: string[] = [
         'Timestamps are Gemini estimates derived from its internal sampling, not frame-accurate seek positions. Verify with extract_frames before cutting.',
       ]
@@ -112,7 +112,13 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
       if (isNoMatch(response)) {
         return {
           summary: `No match found for "${input.query}".`,
-          data: { query: input.query, matches: [], found: false },
+          data: {
+            query: input.query,
+            matches: [],
+            found: false,
+            durationSeconds,
+            raw: response.trim(),
+          },
           warnings,
         }
       }
@@ -123,9 +129,26 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
         )
         return {
           summary: response.trim(),
-          data: { query: input.query, matches: [], found: true, raw: response.trim() },
+          data: {
+            query: input.query,
+            matches: [],
+            found: true,
+            durationSeconds,
+            raw: response.trim(),
+          },
           warnings,
         }
+      }
+
+      // A model reply is not validated against the media length, so an obviously
+      // impossible estimate is flagged instead of being presented as a real moment.
+      const beyondDuration = matches.filter(
+        (match) => durationSeconds > 0 && match.startSeconds > durationSeconds,
+      )
+      if (beyondDuration.length > 0) {
+        warnings.push(
+          `${beyondDuration.length} reported timestamp(s) fall beyond the ${formatTimestamp(durationSeconds)} clip and cannot be real moments. Treat them as out of range.`,
+        )
       }
 
       const summary = [
@@ -145,7 +168,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
           query: input.query,
           found: true,
           matches,
-          durationSeconds: prepared.metadata.durationSeconds,
+          durationSeconds,
         },
         warnings,
       }

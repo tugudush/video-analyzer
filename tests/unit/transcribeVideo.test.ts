@@ -254,4 +254,13 @@ describe('transcribe_video output target', () => {
       transcribeVideoOperation.run({ videoPath: source, outputPath: dir }, createContext(service)),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
+
+  it('treats a whitespace-only reply as no speech, not an empty transcript', async () => {
+    const { service } = createFakeGemini('   \n\t ')
+
+    const result = await transcribeVideoOperation.run({ videoPath: source }, createContext(service))
+
+    expect(result.summary).toBe('No audible speech detected.')
+    expect(result.data).toMatchObject({ noSpeech: true, characters: 0 })
+  })
 })

@@ -163,9 +163,11 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    cp .env.example .env    # then set GEMINI_API_KEY
    ```
 
+   A `.env` file is treated as untrusted input, because it travels with whatever repository the agent is working in. It may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings; `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` must come from the real environment, so a repository cannot choose the binaries that run or relax the private-host guard.
+
    > **After setting a Windows environment variable, restart VS Code.** Windows stores it immediately, but a process only receives an environment snapshot when it starts. Restarting just the terminal is not enough — the integrated terminal inherits VS Code's environment, not the registry.
    >
-   > Enter the value without surrounding quotes and check for a trailing space; either makes the key invalid.
+   > Enter the value without surrounding characters: a surrounding quote pair is kept literally in a real environment variable, and a trailing space is trimmed.
    >
    > The `env` block in an MCP config applies **only** to the MCP server. The Skill path never reads it — it inherits the process environment instead. If you use both interfaces, set the key in the OS environment (or `.env`) so both see it.
 
@@ -206,7 +208,7 @@ video-analyzer get_video_info --input-file args.json
 cat args.json | video-analyzer get_video_info
 ```
 
-Every call prints one JSON envelope on stdout and writes diagnostics to stderr:
+Operations and `list` print one JSON envelope on stdout and write diagnostics to stderr; `--version` and `help` print plain text:
 
 ```json
 {
@@ -266,6 +268,8 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 
 The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 
+A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries that run or turn off the private-host guard.
+
 Details: [`skills/video-analyzer/references/configuration.md`](skills/video-analyzer/references/configuration.md).
 
 ## Errors
@@ -304,10 +308,12 @@ See [`findings-and-plan.md`](findings-and-plan.md) for the original design ratio
 npm run typecheck    # tsc --strict, includes tests
 npm run lint         # oxlint (src, tests, skills)
 npm run lint:fix     # oxlint --fix
-npm test             # vitest (unit, contract, integration, skill)
+npm test             # build, then vitest (unit, contract, integration, skill)
 npm run format       # prettier
 npm run check        # typecheck + lint + tests + format check
 ```
+
+`npm test` and `npm run check` run `npm run build` first (`pretest`). The Skill suite drives the packaged launcher in `dist/`, so without that build a clean checkout would fail for a reason unrelated to the change.
 
 Integration tests generate their own media fixtures with ffmpeg and **skip silently** when ffmpeg is unavailable, so a green run without ffmpeg means 11 tests did not execute. Check the skip count if that matters.
 

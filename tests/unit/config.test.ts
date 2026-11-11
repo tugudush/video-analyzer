@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest'
-import { DEFAULT_GEMINI_MODEL, loadConfig, requireGeminiApiKey } from '../../src/config.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import {
+  DEFAULT_GEMINI_MODEL,
+  DOTENV_KEYS,
+  applyDotEnv,
+  loadConfig,
+  requireGeminiApiKey,
+} from '../../src/config.js'
 
 describe('loadConfig', () => {
   it('applies documented defaults', () => {
@@ -86,5 +95,67 @@ describe('requireGeminiApiKey', () => {
       expect(err.code).toBe('CONFIG_MISSING')
       expect(err.hint).toContain('GEMINI_API_KEY')
     }
+  })
+})
+
+/**
+ * `.env` travels with the working directory, which in the Skill workflow is a
+ * repository the agent did not write. It may supply the tool's own settings, but
+ * it must not choose which executable runs or relax the network policy.
+ */
+describe('.env trust boundary', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-dotenv-policy-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('applies the tool settings a repository may choose', async () => {
+    const file = path.join(dir, '.env')
+    await writeFile(
+      file,
+      [
+        'GEMINI_API_KEY=from-file',
+        'VIDEO_ANALYZER_MAX_FRAMES=7',
+        'VIDEO_ANALYZER_OUTPUT_DIR=/tmp/out',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const target: NodeJS.ProcessEnv = {}
+    expect(applyDotEnv(target, file).toSorted()).toEqual([
+      'GEMINI_API_KEY',
+      'VIDEO_ANALYZER_MAX_FRAMES',
+      'VIDEO_ANALYZER_OUTPUT_DIR',
+    ])
+    expect(target['VIDEO_ANALYZER_MAX_FRAMES']).toBe('7')
+  })
+
+  it.each(['PATH', 'FFMPEG_PATH', 'FFPROBE_PATH', 'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS'])(
+    'ignores %s from the file',
+    async (name) => {
+      const file = path.join(dir, '.env')
+      await writeFile(file, `${name}=/tmp/attacker-controlled\n`, 'utf8')
+
+      const target: NodeJS.ProcessEnv = {}
+      expect(applyDotEnv(target, file)).toEqual([])
+      expect(target).not.toHaveProperty(name)
+    },
+  )
+
+  it('keeps the allowlist limited to settings this toolkit reads', () => {
+    for (const forbidden of [
+      'PATH',
+      'FFMPEG_PATH',
+      'FFPROBE_PATH',
+      'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS',
+    ]) {
+      expect(DOTENV_KEYS as readonly string[]).not.toContain(forbidden)
+    }
+    expect(DOTENV_KEYS as readonly string[]).toContain('VIDEO_ANALYZER_OUTPUT_DIR')
   })
 })

@@ -24,9 +24,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 
 function fail(code, message, hint) {
   const payload = { ok: false, error: { code, message, ...(hint ? { hint } : {}) } }
-  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
-  process.stderr.write(`${code}: ${message}${hint ? `\nHint: ${hint}` : ''}\n`)
-  process.exit(1)
+  // Writing to a pipe is asynchronous on Windows, so the exit has to wait for
+  // both streams or the envelope can be lost on the way out.
+  return Promise.all([
+    new Promise((resolve) =>
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`, resolve),
+    ),
+    new Promise((resolve) =>
+      process.stderr.write(`${code}: ${message}${hint ? `\nHint: ${hint}` : ''}\n`, resolve),
+    ),
+  ]).then(() => process.exit(1))
 }
 
 /**
@@ -85,8 +92,14 @@ function run(command, argv) {
 const [, , operation, ...rest] = process.argv
 
 if (!operation) {
-  fail('INVALID_INPUT', 'No operation given.', 'Run: node invoke.mjs list')
+  await fail('INVALID_INPUT', 'No operation given.', 'Run: node invoke.mjs list')
 }
+
+/**
+ * `help` and `list` take positional operands (`help extract_frames`), not a JSON
+ * payload, so their arguments must not be folded into `--input`.
+ */
+const metaCommand = operation === 'help' || operation === 'list'
 
 const forwarded = []
 let payload
@@ -102,7 +115,7 @@ for (let index = 0; index < rest.length; index += 1) {
     payloadFile = arg.slice('--json-file='.length)
   } else if (arg === '--pretty') {
     forwarded.push('--pretty')
-  } else if (payload === undefined) {
+  } else if (!metaCommand && payload === undefined) {
     payload = arg
   } else {
     forwarded.push(arg)
@@ -113,7 +126,7 @@ if (payloadFile) {
   try {
     payload = await readFile(path.resolve(payloadFile), 'utf8')
   } catch (error) {
-    fail('INPUT_NOT_FOUND', `Could not read ${payloadFile}.`, error.message)
+    await fail('INPUT_NOT_FOUND', `Could not read ${payloadFile}.`, error.message)
   }
 }
 
@@ -145,7 +158,7 @@ if (payload !== undefined) {
     try {
       await writeFile(payloadTempFile, payload, 'utf8')
     } catch (error) {
-      fail('OUTPUT_FAILED', 'Could not stage the JSON payload for the CLI.', error.message)
+      await fail('OUTPUT_FAILED', 'Could not stage the JSON payload for the CLI.', error.message)
     }
     forwarded.push('--input-file', payloadTempFile)
   } else {
@@ -162,7 +175,7 @@ try {
 
   if (!result.stdout.trim()) {
     await cleanupPayload()
-    fail(
+    await fail(
       'INTERNAL',
       'The video-analyzer CLI produced no output.',
       result.stderr.trim() ||

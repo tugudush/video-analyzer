@@ -42,7 +42,7 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
     const prepared = await prepareMedia(input.videoPath, ctx)
     try {
       const service = getGeminiService(ctx)
-      const { sizeBytes, mtimeMs } = await statForUpload(prepared.media)
+      const upload = await statForUpload(prepared.media)
 
       const prompt = input.focus
         ? `${SUMMARY_PROMPT}\n\nPay particular attention to: ${input.focus}`
@@ -51,8 +51,7 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
       const summary = await service.generateWithFile({
         path: prepared.path,
         mimeType: prepared.media.mimeType,
-        sizeBytes,
-        mtimeMs,
+        ...upload,
         prompt,
         systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
         ...(ctx.signal ? { signal: ctx.signal } : {}),

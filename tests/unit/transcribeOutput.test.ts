@@ -79,29 +79,40 @@ describe('transcribe_video output failures', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('reports OUTPUT_FAILED when the transcript cannot be written', async () => {
+  it('keeps the transcript and reports the write failure as a warning', async () => {
     const target = path.join(dir, 'transcript.txt')
     writeFailure.code = 'ENOSPC'
 
-    try {
-      await transcribeVideoOperation.run(
-        { videoPath: source, outputPath: target },
-        createContext(createService()),
-      )
-      throw new Error('expected the write to fail')
-    } catch (error) {
-      const failure = error as {
-        code?: string
-        hint?: string
-        details?: Record<string, unknown>
-      }
-      expect(failure.code).toBe('OUTPUT_FAILED')
-      expect(failure.hint).toContain('choose a writable path')
-      expect(failure.details).toMatchObject({ outputPath: path.resolve(target), code: 'ENOSPC' })
-    }
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target },
+      createContext(createService()),
+    )
 
-    // Nothing was written, and the source media is untouched.
+    // The transcription is the result of an expensive call; a failed write must
+    // not discard it.
+    expect(result.summary).toBe('Hello from the recording.')
+    expect(result.warnings?.join(' ')).toContain('was not written')
+    expect(result.warnings?.join(' ')).toContain('ENOSPC')
+    expect(result.artifacts).toBeUndefined()
+    expect(result.data).toMatchObject({
+      outputPath: path.resolve(target),
+      outputWritten: false,
+    })
+
     await expect(readFile(target, 'utf8')).rejects.toThrow()
     expect(await readFile(source, 'utf8')).toBe('media bytes')
+  })
+
+  it('marks a written transcript in the result', async () => {
+    const target = path.join(dir, 'transcript.txt')
+
+    const result = await transcribeVideoOperation.run(
+      { videoPath: source, outputPath: target },
+      createContext(createService()),
+    )
+
+    expect(await readFile(target, 'utf8')).toBe('Hello from the recording.\n')
+    expect(result.artifacts?.[0]?.path).toBe(path.resolve(target))
+    expect(result.data).toMatchObject({ outputWritten: true })
   })
 })

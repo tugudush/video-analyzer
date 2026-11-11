@@ -253,6 +253,23 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
       const pageTimestamps = timestamps.slice(offset, offset + maxImages)
       const hasMore = offset + page.length < paths.length
 
+      if (page.length === 0) {
+        return {
+          summary: `No frames on this page: offset ${offset} is past the ${paths.length} frame(s) this request extracted (mode: ${mode}).`,
+          data: {
+            mode,
+            outputDir: outDir,
+            totalFrames: paths.length,
+            offset,
+            hasMore: false,
+            truncated,
+            ...intervalStats,
+          },
+          images: [],
+          warnings,
+        }
+      }
+
       if (hasMore) {
         warnings.push(
           `Returned frames ${offset + 1}-${offset + page.length} of ${paths.length}. Re-run with offset=${offset + page.length} for the next page.`,

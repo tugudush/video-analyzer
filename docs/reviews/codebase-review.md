@@ -1,242 +1,259 @@
 # Codebase Review
 
 **Date:** 2026-11-11
-**Revision:** `1795c4e` (`main`, working tree apart from this file)
-**Scope:** all of [`src/`](../../src), [`tests/`](../../tests), [`skills/`](../../skills), the user-facing docs, and the build/lint/test configuration.
+**Revision:** `144e32f` (`main`, working tree differs only in this file)
+**Scope:** all of [`src/`](../../src) (29 files, ~3.8k lines), [`tests/`](../../tests) (19 suites + 2 helpers, ~2.8k lines), [`skills/`](../../skills) (~620 lines of Skill and reference docs), [`README.md`](../../README.md), [`findings-and-plan.md`](../../findings-and-plan.md), and the build/lint/test configuration.
+
+## Verdict
+
+Green build and a green gate, clean layering, and an unusually consistent error contract. **No P1 defect and no exploitable remote vulnerability was found.**
+
+Two P2 issues remain. One undermines what a green `npm run check` means: the suite silently depends on a pre-built, gitignored `dist/`, so a clean checkout fails and a linked global install can make the suite pass against an older build. The other is a local trust boundary: a `.env` in the working directory can set `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, the SSRF opt-in, and the Gemini key, so an untrusted repository can redirect subprocess execution or media uploads. The five P3s are contract and documented-behaviour gaps: raw `INTERNAL` errors for an unusable artifact directory, a paid-for transcript thrown away when the write fails (which the troubleshooting guide says does not happen), a broken `invoke.mjs help <operation>`, an upload cache that can never hit for URL inputs, and a README claim that every CLI call emits one JSON envelope.
+
+All ten findings from the previous review (recorded against `1795c4e`, resolved in `144e32f`) were re-checked and remain fixed.
+
+> **Updated 2026-11-11.** Findings 1–10 below were subsequently fixed; see [Resolution Status](#resolution-status). Adding CI was intentionally left out of that pass, so the CI recommendation still stands.
 
 ## Method
 
-- Read every source file: the six operations, both adapters, the Gemini and FFmpeg services, the media-input and network helpers, and all utilities (≈3.7k lines across 29 files).
-- Read all 21 test files (≈2.6k lines), the README, `SKILL.md`, the three Skill reference documents, and `findings-and-plan.md`.
-- Ran the full gate: `npm run check` (typecheck → oxlint → vitest → prettier). **Result: green** — `tsc --noEmit` clean, oxlint clean, **194 passed / 1 skipped** across 19 files in ~6.3 s, Prettier clean. `npm run build` also succeeds.
-- Re-ran the suite with `FFMPEG_PATH`/`FFPROBE_PATH` pointing at a missing binary to measure the real skip count.
-- Probed runtime behaviour against the built `dist/` with scripted repros: `.env` parsing, a cancelled FFmpeg run, download timeout and mid-stream cancellation, the CLI's `--input-file` path, `transcribe_video`'s pre-flight side effects, and the Skill launcher's Windows `.cmd` shim.
-
-This is a well-structured, unusually disciplined codebase. Layering is clean (registry → operations → services → utils, with thin adapters), the error model is uniform and typed, security-sensitive paths are hardened deliberately, and the test suite is fast and behaviour-oriented. The findings below are contract, robustness, and documentation issues; **no P1 defect and no exploitable security hole was found**.
-
-All 15 findings from the previous review (recorded at `12d2c45`) were re-checked and remain resolved; nothing in this document re-litigates them.
+- Read every source file, every test suite and helper, the README, the Skill package, the three reference documents, and `findings-and-plan.md`. Compared every documented operation, setting, error code, limit, and exit behaviour against the implementation.
+- Ran the full gate: `npm run check` (typecheck -> oxlint -> vitest -> prettier). **Result: green** - `tsc --noEmit` clean, oxlint clean, **204 passed / 1 skipped** across 19 files in ~6 s, Prettier clean. `npm run build` is also clean.
+- Re-ran the suite with `FFMPEG_PATH` / `FFPROBE_PATH` pointing at missing binaries: **193 passed / 12 skipped (205)**, i.e. exactly the 11 extra skips the README documents.
+- Probed runtime behaviour against `dist/`: an existing file passed as `extract_frames.outputDir`; a `.env` supplying `FFMPEG_PATH`/`FFPROBE_PATH`; the Skill launcher's `help <operation>`; the output shape of `--version`, `help`, and `list`; the Skill suite with `dist/` temporarily renamed; quoted `.env` values with trailing comments; an idle open stdin pipe on the CLI.
+- Re-verified the previous review's ten resolutions, including re-running the probes that originally reproduced them.
 
 ## Findings Summary
 
-| #   | Severity | Area             | Finding                                                                                                                                                             |
-| --- | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | P2       | Configuration    | A quoted `.env` value with a trailing comment is stored verbatim (`"key" # note`), producing a silently invalid `GEMINI_API_KEY`                                    |
-| 2   | P2       | Skill robustness | On the Windows global-`.cmd`-shim install path, the launcher routes the JSON payload through `cmd.exe`, so `&`, `\|`, or `^` corrupts the arguments                 |
-| 3   | P3       | Error contract   | Cancelling a local FFmpeg run reports `MEDIA_PROCESSING_FAILED: ffmpeg failed.` with a raw encoder-log tail instead of a cancellation                               |
-| 4   | P3       | Error contract   | Download timeout reports "Check network access and that the URL is publicly reachable"; a caller abort mid-stream reports "Failed to write `<path>`"                |
-| 5   | P3       | Error contract   | `--input-file` pointing at a missing file reports `INTERNAL` (an ENOENT message), while the Skill launcher reports `INPUT_NOT_FOUND` for the same mistake           |
-| 6   | P3       | Side effects     | `transcribe_video` creates missing `outputPath` parent directories during validation, so a `CONFIG_MISSING` call still leaves empty directories behind              |
-| 7   | P3       | Docs accuracy    | README claims a run without FFmpeg skips 15 tests; the measured number is 11                                                                                        |
-| 8   | P3       | MCP contract     | `get_video_info` publishes `readOnlyHint: false` although it writes nothing, so clients prompt for a tool that cannot damage anything                               |
-| 9   | P3       | Docs accuracy    | [`findings-and-plan.md`](../../findings-and-plan.md) still says "Planning only — do not implement yet" and documents yt-dlp and AI frame sampling that were removed |
-| 10  | P4       | Repo hygiene     | `.gitignore` carries a `.video-analyzer/` entry that nothing in the repo creates                                                                                    |
+| #   | Severity | Area              | Finding                                                                                                                                                                 |
+| --- | -------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | P2       | Verification      | `npm run check` never builds, but the Skill suite executes `dist/cli.js`: a clean checkout fails, and a linked global install can validate a stale build                |
+| 2   | P2       | Security          | `.env` from the working directory sets arbitrary variables, including `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, and `GEMINI_API_KEY` |
+| 3   | P3       | Error contract    | An unusable artifact directory (`outputDir` or `VIDEO_ANALYZER_OUTPUT_DIR` that is a file) surfaces as `INTERNAL` with a raw `ENOTDIR` message                          |
+| 4   | P3       | Data preservation | A transcript write failure throws away the generated transcript, while `troubleshooting.md` says the text is returned in the summary                                    |
+| 5   | P3       | Skill launcher    | `node invoke.mjs help <operation>` treats the operation name as a JSON payload, so it prints general usage instead of the operation schema                              |
+| 6   | P3       | Caching contract  | Upload reuse never applies to direct URL inputs: each call downloads into a new temp path, so the cache key always changes                                              |
+| 7   | P3       | Docs accuracy     | README says every CLI call prints one JSON envelope; `--version` and `help` print plain text and `list` uses a different shape                                          |
+| 8   | P4       | Docs accuracy     | Trailing-space key warning is false (the value is trimmed); `DEPENDENCY_MISSING` says "on PATH" even when an explicit path was configured                               |
+| 9   | P4       | Result shapes     | `search_timestamp` omits `durationSeconds` on no-match/raw results and drops the model's prose; an out-of-range `offset` reports "0 frames"                             |
+| 10  | P4       | Hygiene / polish  | No CI, unswept launcher payload files, `video-analyzer-output/` missing from `.prettierignore`, dead public surface, `fail()` uses `process.exit`                       |
 
 ## Findings
 
-### P2: A quoted `.env` value with a trailing comment is stored verbatim
+### P2: A green `npm run check` does not prove the current tree works
 
-**Where:** [`parseDotEnv`](../../src/utils/dotenv.ts:37) — the quoted branch at [line 49](../../src/utils/dotenv.ts:49) and [`stripQuotes`](../../src/utils/dotenv.ts:22).
+**Where:** [`package.json:33`](../../package.json:33) (`check` runs typecheck, lint, test, format - never `build`); [`tests/skill/skill.test.ts:89`](../../tests/skill/skill.test.ts:89) and [line 105](../../tests/skill/skill.test.ts:105) spawn `scripts/invoke.mjs`; [`invoke.mjs:43`](../../skills/video-analyzer/scripts/invoke.mjs:43) resolves `<repo>/dist/cli.js`, else a PATH install.
 
-Values beginning with a quote go through `stripQuotes`, which only removes the quotes when the **last** character is also a quote. An inline comment therefore defeats both the quote handling and the comment handling, because the comment branch is the `else` arm.
+`dist/` is gitignored (`.gitignore:2`), so a fresh clone has no build. The Skill tests nevertheless execute the packaged launcher, whose first resolution candidate is the build:
 
 ```text
-input:  A="quoted value" # trailing note
-result: A = '"quoted value" # trailing note'
+$ mv dist dist__probe
+$ npx vitest run tests/skill/skill.test.ts
+ FAIL  launcher lists operations without an MCP server
+       Error: Command failed: node .../invoke.mjs list
+       INTERNAL: The video-analyzer CLI produced no output.
+ FAIL  launcher keeps payload metacharacters intact through the Windows cmd shim
+       AssertionError: expected 'INTERNAL' to be 'INPUT_NOT_FOUND'
+ Tests  2 failed | 6 passed (8)
 ```
 
-Reproduced against the built parser:
+**Impact:** on a clean checkout (or in CI without a prior build) `npm test` and `npm run check` fail for a reason that has nothing to do with the change. Worse, when the package is installed globally - on this machine `npm root -g` links straight back to the working tree - the same tests resolve whatever `dist/` happens to exist, so a green run can validate an older build than the source being edited. The suite's headline claim ("204 passed") therefore does not mean "the current source passes".
+
+**Suggested fix:** make the gate self-contained. Either add `"pretest": "npm run build"` (or `npm run build &&` inside `check`), or stop spawning a build from the tests and import the CLI module in-process / build once into a temp directory. Add the build step to the README's `npm test` / `npm run check` instructions either way.
+
+### P2: `.env` in the working directory is an unrestricted environment override
+
+**Where:** [`config.ts:96`](../../src/config.ts:96) loads `.env`; [`dotenv.ts:79`](../../src/utils/dotenv.ts:79) copies every parsed key into `process.env`; [`ffmpeg.ts:84`](../../src/services/ffmpeg.ts:84) spawns the configured binary.
+
+`.env` is loaded from `process.cwd()` and applied to the **real** process environment. Nothing restricts the keys, so a file in the directory the tool runs from can change:
+
+- `FFMPEG_PATH` / `FFPROBE_PATH` - which executable `execFile` starts,
+- `PATH` - which `ffmpeg`/`ffprobe` the defaults resolve to,
+- `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` - disabling the SSRF policy for direct downloads,
+- `GEMINI_API_KEY` - when no real key is exported, routing the user's media to a different Gemini account.
+
+Reproduced with a working directory containing only this `.env`:
 
 ```text
-{
-  "A": "\"quoted value\" # trailing note",
-  "B": "plain",
-  "C": "'single' # note",
-  "D": "has # hash"
+FFMPEG_PATH=definitely-not-a-real-ffmpeg
+FFPROBE_PATH=definitely-not-a-real-ffprobe
+
+$ node dist/cli.js get_video_info --input '{"videoPath":"…/sample.mp4"}'
+{"ok":false,"error":{"code":"DEPENDENCY_MISSING",
+ "message":"definitely-not-a-real-ffprobe is required but was not found on PATH.", …}}
+```
+
+**Impact:** the threat model is the documented Skill workflow: an agent runs `node ./scripts/invoke.mjs …` with the working directory set to a cloned repository, which may legitimately ship a `.env`. Such a file can point the tool at a bundled executable (local code execution with the user's privileges), relax the private-host block, or receive the user's media through an attacker-controlled API key. OS environment variables still win over `.env`, which limits but does not remove the vector - most users never set `FFMPEG_PATH`, `PATH`, or the private-host flag explicitly.
+
+**Suggested fix:** treat `.env` as untrusted configuration. Allowlist the keys it may contribute (the `VIDEO_ANALYZER_*` limits, `GEMINI_MODEL`, `VIDEO_ANALYZER_OUTPUT_DIR`, optionally `GEMINI_API_KEY`), and refuse `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, and security toggles from it. If the convenience must stay, gate `.env` loading behind an explicit opt-in (for example `VIDEO_ANALYZER_LOAD_DOTENV=1`) and document that a `.env` in an untrusted repository is not safe to trust. Add a test that a `.env` setting `PATH` or `FFMPEG_PATH` is ignored.
+
+### P3: An unusable artifact directory is reported as `INTERNAL`
+
+**Where:** [`shared.ts:94`](../../src/operations/shared.ts:94) `createArtifactDir` calls `ensureDir` at [line 103](../../src/operations/shared.ts:103) with no error mapping; called from [`extractFrames.ts:156`](../../src/operations/extractFrames.ts:156).
+
+`outputDir` (or `VIDEO_ANALYZER_OUTPUT_DIR`) is resolved and passed to `mkdir`. If any component is a file, or the directory cannot be created, the raw filesystem error escapes:
+
+```text
+$ node dist/cli.js extract_frames --input '{"videoPath":"…/sample.mp4","outputDir":"…/notadir.txt"}'
+{"ok":false,"error":{"code":"INTERNAL",
+ "message":"ENOTDIR: not a directory, mkdir '…\\notadir.txt'"}}
+```
+
+**Impact:** `INTERNAL` is documented as "a bug in the tool". This is a caller mistake with an obvious fix, and the message names a path but not the argument or setting that produced it. An agent relaying the result will tell the user to report a bug instead of changing `outputDir`. The message also carries raw OS text that varies by platform.
+
+**Suggested fix:** wrap `ensureDir` inside `createArtifactDir` and raise `OUTPUT_FAILED` (or `INVALID_INPUT` for `ENOTDIR`) with a hint naming `outputDir` / `VIDEO_ANALYZER_OUTPUT_DIR` and `details: { dir, code }`. There is already an `OUTPUT_FAILED` code used by `transcribe_video`; reuse it and add a unit test.
+
+### P3: A failed transcript write discards the transcript, contradicting the docs
+
+**Where:** [`transcribeVideo.ts:215`](../../src/operations/transcribeVideo.ts:215) writes before returning; the success payload is built at [line 228](../../src/operations/transcribeVideo.ts:228). [`troubleshooting.md:141`](../../skills/video-analyzer/references/troubleshooting.md:141) says: "re-transcribing is not required to know the text, which is also returned in the response summary."
+
+The write is on the success path:
+
+```ts
+if (target && !noSpeech) {
+  await writeTranscript(target, `${text}\n`, input.overwrite ?? false)   // throws
+  artifacts.push({ … })
 }
+…
+return { summary: noSpeech ? 'No audible speech detected.' : text, … }   // never reached
 ```
 
-**Impact:** `.env` files routinely annotate secrets (`GEMINI_API_KEY="AIza…" # aistudio`). Such a key is loaded with the quotes and the comment embedded and with no diagnostic, and the user is then told "Check your API key, quota, and network access" (`GEMINI_REQUEST_FAILED`) while holding a correct key. Both quoting styles and trailing comments are documented as supported in [`configuration.md`](../../skills/video-analyzer/references/configuration.md) and in the [`dotenv.ts`](../../src/utils/dotenv.ts:8) header comment, so this is a documented contract that does not hold.
+**Impact:** when the write fails (`ENOSPC`, `EACCES`, a read-only volume, a parent that is a file), the caller gets `OUTPUT_FAILED` and nothing else. The transcript - which may represent minutes of Gemini processing and a non-trivial API bill - is unrecoverable, and the troubleshooting guide tells the user it is in the response. The existing test asserts the failure and that no file was written, but not the recovery path.
 
-**Suggested fix:** strip a trailing `\s+#…` comment before quote stripping when the value is quoted (or match `^(['"])(.*)\1(?:\s+#.*)?$` first and fall back to the current logic). Add the quoted-plus-comment case to [`tests/unit/dotenv.test.ts`](../../tests/unit/dotenv.test.ts), which currently covers quotes and comments only in isolation.
+**Suggested fix:** treat the transcript as the primary result. Catch the write failure and return the text in `summary`/`data` with a warning that names the write problem (or add `details.transcript` to the error). Correct the troubleshooting paragraph either way. Cap any inline text to keep the envelope bounded.
 
-### P2: The Windows `.cmd` shim corrupts payloads containing shell metacharacters
+### P3: `invoke.mjs help <operation>` is broken
 
-**Where:** [`invoke.mjs:118`](../../skills/video-analyzer/scripts/invoke.mjs:118).
-
-For a user-level Skill install resolved to the npm bin shim, the launcher runs `cmd.exe /d /s /c video-analyzer.cmd <operation> --input <json>`. `cmd.exe` re-parses that command line, so `&`, `|`, and `^` inside the JSON become shell operators before the CLI ever sees them.
-
-Reproduced with the launcher copied to a directory that forces the `video-analyzer.cmd` path (no local `dist/`, no `VIDEO_ANALYZER_CLI_PATH`):
+**Where:** [`invoke.mjs:91`](../../skills/video-analyzer/scripts/invoke.mjs:91) collects flags, then treats the **first positional argument** as the JSON payload at [line 105](../../skills/video-analyzer/scripts/invoke.mjs:105); the usage block advertises `node invoke.mjs help [operation]` at [line 13](../../skills/video-analyzer/scripts/invoke.mjs:13). [`troubleshooting.md:106`](../../skills/video-analyzer/references/troubleshooting.md:106) tells users to run exactly that.
 
 ```text
-$ node invoke.mjs analyze_video '{"videoPath":"C:\\media\\a&b.mp4","question":"What does \"Q3\" mean & why?"}'
-{"ok":false,"error":{"code":"INVALID_INPUT","message":"Arguments must be valid JSON.", …}}
-exit=1
+$ node skills/video-analyzer/scripts/invoke.mjs help extract_frames
+video-analyzer — Gemini-powered video and audio analysis        # general usage
+Usage: …
 
-$ node invoke.mjs analyze_video '{"videoPath":"C:\\media\\a^b|c.mp4","question":"why?"}'
-The filename, directory name, or volume label syntax is incorrect.
-exit=255          # no JSON envelope at all: the launcher's own contract is broken
+$ node dist/cli.js help extract_frames
+extract_frames — Extract Frames
+…
+Input schema: { … }                                             # expected
 ```
 
-The `VIDEO_ANALYZER_CLI_PATH` path and the repo-relative build path spawn `process.execPath` directly and are unaffected, which is why this only shows up for the documented global install.
+The launcher forwards `--input extract_frames`; the CLI's help branch consumes it as a flag value, so `rest[0]` is empty and it falls back to general usage.
 
-**Impact:** Windows paths containing `&` (for example a folder called `Q&A`) and questions containing `&` or `|` fail with a misleading "Arguments must be valid JSON", or with no envelope at all. [`SKILL.md`](../../skills/video-analyzer/SKILL.md) recommends `--json-file` on Windows shells, which avoids it, but the launcher still accepts the inline form the examples show, and the documented `--pretty`/forwarded arguments take the same route.
+**Impact:** the documented recovery step for `INVALID_INPUT` (print the operation schema) does not work through the Skill, which is the interface agents use. The agent cannot discover argument names without reading `operations.md`, and an agent following the troubleshooting guide reports the wrong information.
 
-**Suggested fix:** do not let `cmd.exe` re-parse the payload. Resolve the shim to its underlying script (read the `.cmd` and spawn its `node …` target), or pass arguments through a single quoted command string with `^`-escaping of `& | ^ < > ( ) "`, or write the payload to a temporary file and forward `--input-file`. Cover it with a launcher test that runs a payload containing `&`, `|`, and a space.
+**Suggested fix:** only infer a payload when the operation is not `help` or `list`; forward operands positionally for those two. Add a launcher test asserting the operation name appears in `help extract_frames` output.
 
-### P3: Cancelling a local FFmpeg run is reported as a media-processing failure
+### P3: Upload reuse can never happen for direct URL inputs
 
-**Where:** [`run()` in ffmpeg.ts:57](../../src/services/ffmpeg.ts:57); the generic branch at [line 79](../../src/services/ffmpeg.ts:79).
+**Where:** [`mediaInput.ts:87`](../../src/services/mediaInput.ts:87) creates a new temp directory per resolution; [`gemini.ts:247`](../../src/services/gemini.ts:247) keys the upload cache on `path + size + mtime`; [`shared.ts:12`](../../src/operations/shared.ts:12) documents "One Gemini service per process/config so upload reuse survives across calls in a long-lived MCP session."
 
-`execFile` with a `signal` rejects with an `AbortError` when the caller cancels, but only `ENOENT` is special-cased, so every other rejection — cancellation included — becomes `MEDIA_PROCESSING_FAILED: ffmpeg failed.` with the last four stderr lines as the hint.
+Every direct URL resolution downloads to `mkdtemp()/source.media`, so the path and mtime differ on every call. Two `analyze_video` calls on the same URL in one MCP session therefore download the file twice and upload it twice, even though the cache works exactly as designed for local files.
 
-Reproduced by aborting an `extract_frames` interval run 150 ms in:
+**Impact:** repeated questions about the same remote recording pay the download, the upload, and the Gemini processing wait again. On the default 2 GB limit and a slow link this is the most expensive part of the call, and the code comment promises otherwise. It is also a quota and bandwidth surprise for MCP sessions, where repeated calls are the normal pattern.
 
-```json
-{
-  "code": "MEDIA_PROCESSING_FAILED",
-  "message": "ffmpeg failed.",
-  "hint": "handler_name    : VideoHandler\r\n    Side data:\r\n … [Parsed_showinfo_2] n: 1 pts: 1 pts_time:0.1 …"
-}
-```
+**Suggested fix:** key the cache on the source identity (URL plus `ETag`/`Last-Modified`/`Content-Length`) and keep the downloaded file for the session, or at least document that reuse is local-only. `sweepStaleTempDirs` already handles abandoned temp directories, so a session-scoped download directory fits the existing cleanup model.
 
-**Impact:** the Gemini side maps cancellation to an explicit "The Gemini request was cancelled" ([`gemini.ts:217`](../../src/services/gemini.ts:217)), but the local side tells the user — and the agent relaying it — that the media failed to process, with a raw `showinfo` dump as the hint. [`troubleshooting.md`](../../skills/video-analyzer/references/troubleshooting.md) maps `MEDIA_PROCESSING_FAILED` to "corrupt file, re-encode", so a Ctrl-C sends the user down the wrong path and can prompt a needless re-encode.
+### P3: README's "every call prints one JSON envelope" is inaccurate
 
-**Suggested fix:** check `signal?.aborted` (or `error.name === 'AbortError'` via the existing [`isAbortError`](../../src/utils/abort.ts:81) helper) before the generic branch and raise the same cancellation error the Gemini path uses. Add a unit test that aborts an FFmpeg call.
+**Where:** [`README.md:209`](../../README.md:209), immediately after the CLI examples that include `--version` and `help`.
 
-### P3: Download timeout and download cancellation are reported with the wrong cause
+Only operation invocations and `list` produce JSON. `--version` prints `0.1.0` and `help` prints usage text; `list` returns `{ ok, operations }` without `operation`, `summary`, `warnings`, `images`, or `artifacts`. A script or agent that follows the sentence and pipes every command into `JSON.parse` breaks on two of the five examples.
 
-**Where:** [`downloadToFile`](../../src/utils/net.ts:224) — the deadline at [line 237](../../src/utils/net.ts:237), the fetch catch at [line 252](../../src/utils/net.ts:252), and the pipeline catch at [line 334](../../src/utils/net.ts:334).
+Also in [`cli.ts:118`](../../src/adapters/cli.ts:118), the `Environment:` block lists `VIDEO_ANALYZER_MAX_FRAMES`, `REQUEST_TIMEOUT_MS`, and others but omits `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS` and `VIDEO_ANALYZER_POLL_INTERVAL_MS`, both of which the README and `.env.example` document and the code reads.
 
-Two distinct failures share one catch-all:
+**Suggested fix:** say "Operations and `list` print JSON; `--version` and `help` print plain text", and add the two missing settings to `CLI_USAGE`. A one-line test over the documented CLI examples would keep this honest.
 
-```text
-# A server that accepts the connection and never responds (300 ms deadline)
-{"code":"DOWNLOAD_FAILED","message":"Failed to download http://…/a.mp4",
- "hint":"Check network access and that the URL is publicly reachable.","cause":"TimeoutError"}
+### P4: Small documentation accuracy issues
 
-# Caller aborts while the body is streaming
-{"code":"DOWNLOAD_FAILED","message":"Failed to write C:\\Temp\\va-net-…\\b.bin","cause":"AbortError"}
-```
+- **Trailing spaces are not fatal.** [`README.md:168`](../../README.md:168) and `configuration.md` say a quoted value or a trailing space makes the key invalid. [`readString`](../../src/config.ts:75) trims, so a trailing space is harmless for the CLI; surrounding quotes in a real environment variable are not stripped. Say "quotes are not stripped from environment variables; a trailing space is trimmed".
+- **"On PATH" when a path was given.** [`ffmpeg.ts:84`](../../src/services/ffmpeg.ts:84) always says `<binary> is required but was not found on PATH`, even when the user set `FFPROBE_PATH` explicitly (reproduced above). Name the configured path and the setting.
+- **"Lower ceiling".** `configuration.md` describes scene mode as using `VIDEO_ANALYZER_MAX_FRAMES` as a "lower ceiling"; it is a tighter/clamped ceiling. Minor wording.
+- **Cleanup is best-effort.** `operations.md` says the artifact folder "is removed" on failure; `removeDir` swallows errors, so "is removed on a best-effort basis" is accurate.
 
-**Impact:** the timeout hint names the wrong remedy (there is no setting hint even though the budget is `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`), and a cancellation claims a write failure — a message that suggests disk problems for a user who simply pressed Ctrl-C. The whole download budget also hides behind the Gemini request timeout: the default 5 minutes is tight for the default 2 GB limit on a slow link, and nothing in the error says so.
+### P4: Result-shape inconsistencies
 
-**Suggested fix:** branch on `isAbortError(error)`, and distinguish `signal?.aborted` (cancel) from an internal timeout, with hints naming `VIDEO_ANALYZER_DOWNLOAD_MAX_MB` and the timeout that applied. Consider a dedicated `VIDEO_ANALYZER_DOWNLOAD_TIMEOUT_MS` instead of deriving it from the Gemini request timeout. [`tests/unit/net.test.ts`](../../tests/unit/net.test.ts) currently exercises only `isPrivateAddress` and `assertSafeHttpUrl`, so none of this is pinned.
+- **`search_timestamp`** omits `durationSeconds` from the no-match ([line 115](../../src/operations/searchTimestamp.ts:115)) and unparsed-answer ([line 126](../../src/operations/searchTimestamp.ts:126)) branches, although the parsed branch includes it ([line 148](../../src/operations/searchTimestamp.ts:148)). On `NO_MATCH` the model's prose is also dropped, even though the raw-answer branch preserves it. Timestamps are not checked against the clip duration, so a model reply of `MATCH 999 …` for a 20 s clip is reported verbatim.
+- **`extract_frames`** with `offset` at or beyond `totalFrames` returns `page = []`, `hasMore: false`, and the summary "Extracted 0 frame(s) …" while `data.totalFrames` is non-zero ([lines 252-276](../../src/operations/extractFrames.ts:252)). Say "no frames on this page; there are N total" instead.
+- **`transcribe_video`** treats a whitespace-only model response as a successful empty transcript: `generate()` only rejects a falsy `response.text`, and `trim()` happens afterwards, so `summary` can be `''`. Treat an empty trimmed transcript as `NO_SPEECH`.
 
-### P3: A missing `--input-file` reports `INTERNAL`
+**Suggested fix:** normalise these shapes and add the duration/range check; each is a few lines.
 
-**Where:** [`cli.ts:181`](../../src/adapters/cli.ts:181).
+### P4: Hygiene and packaging polish
 
-```text
-$ node dist/cli.js get_video_info --input-file ./does-not-exist.json
-{"ok":false,"error":{"code":"INTERNAL","message":"ENOENT: no such file or directory, open 'C:\\…\\does-not-exist.json'"}}
-```
+- **No CI.** There is no `.github/` directory. The repository history is review-first, and finding 1 and the Windows-only launcher test depend on CI to stay honest.
+- **Unswept launcher payload files.** `invoke.mjs` stages payloads as `video-analyzer-input-<pid>-<uuid>.json`; [`sweepStaleTempDirs`](../../src/utils/fsUtils.ts:22) only removes **directories**, so a killed launcher leaves the file (which contains media paths and questions) in the temp directory. Extend the sweep to that filename prefix.
+- **`.prettierignore`** does not list `video-analyzer-output/`, so `prettier --check .` traverses every extracted frame directory. Add it (`dist/` is already there).
+- **Dead public surface.** [`mediaInput.ts:67`](../../src/services/mediaInput.ts:67) takes an `override` argument no caller passes; [`net.ts:226`](../../src/utils/net.ts:226) exposes `DownloadOptions.headers` that no caller sets; [`types.ts:8`](../../src/operations/types.ts:8) allows `Artifact.kind` values (`video`, `frame`, `metadata`) that no operation produces; [`fsUtils.ts:49`](../../src/utils/fsUtils.ts:49) dynamically imports `node:fs/promises` inside `ensureDir` on a hot path while every other builtin is imported statically.
+- **`fail()` can truncate its envelope.** [`invoke.mjs:29`](../../skills/video-analyzer/scripts/invoke.mjs:29) writes JSON and calls `process.exit(1)` immediately. On Windows, stdout to a pipe is asynchronous, so the envelope can be lost on the way out. Set `process.exitCode = 1` and return, as the rest of the script already does.
+- **Packaging metadata.** `package.json` has no `repository`, `bugs`, or `homepage`; add them before publishing.
 
-**Impact:** `INTERNAL` is documented as "a bug in the tool", but this is a caller mistake with an obvious recovery. The Skill launcher already maps the same situation to `INPUT_NOT_FOUND` ([`invoke.mjs:96`](../../skills/video-analyzer/scripts/invoke.mjs:96)), so the two interfaces disagree on the code for an identical error — exactly what the shared error contract exists to prevent.
+## Previous Review Status
 
-**Suggested fix:** wrap the `readFile` in a targeted `VideoAnalyzerError('INPUT_NOT_FOUND', …)` with a hint pointing at `--input`/stdin. [`tests/unit/cli.test.ts`](../../tests/unit/cli.test.ts) parses the flag but never exercises the read.
+All ten findings from the review recorded against `1795c4e` are fixed in `144e32f` and were re-checked:
 
-### P3: `transcribe_video` creates output directories before it can fail
-
-**Where:** [`resolveTranscriptTarget`](../../src/operations/transcribeVideo.ts:111) calls [`ensureDir` at line 135](../../src/operations/transcribeVideo.ts:135); the call site runs before the provider check at [line 177](../../src/operations/transcribeVideo.ts:177).
-
-```text
-transcribe_video(outputPath: <tmp>/nested/deeper/transcript.txt) without a key
-→ CONFIG_MISSING
-→ parent dir created despite failure: true
-```
-
-**Impact:** low, but the tool leaves filesystem changes behind for a request that produced nothing, and the same happens for an upload failure or a `NO_SPEECH` result. Validating the target early (extension, alias, existing file) is right; creating directories is not part of validation.
-
-**Suggested fix:** move `ensureDir(path.dirname(target))` into `writeTranscript`, immediately before the write, where the `wx`/overwrite logic already lives.
-
-### P3: README overstates how many tests skip without FFmpeg
-
-**Where:** [`README.md:310`](../../README.md).
-
-"a green run without ffmpeg means 15 tests did not execute" — measured with `FFMPEG_PATH`/`FFPROBE_PATH` set to missing binaries:
-
-```text
-with ffmpeg:     194 passed |  1 skipped (195)
-without ffmpeg:  183 passed | 12 skipped (195)
-```
-
-The delta is **11** (the 10 tests in `describe.skipIf(!available)` in [`localMedia.test.ts`](../../tests/integration/localMedia.test.ts:15) plus the FFmpeg-gated MCP test at [`mcpServer.test.ts:97`](../../tests/integration/mcpServer.test.ts:97)). The 12th skip is the always-skipped symlink case on Windows.
-
-**Suggested fix:** say 11, or drop the number and describe the mechanism. Better still, surface the skip count in CI (see Recommendations) so the claim cannot drift again.
-
-### P3: `get_video_info` is published as not read-only
-
-**Where:** [`mcpTools.ts:66`](../../src/adapters/mcpTools.ts:66) → `readOnly: operation.readOnly ?? operation.category === 'analysis'`; published at [`mcpServer.ts:65`](../../src/adapters/mcpServer.ts:65).
-
-`get_video_info` never writes anything a caller keeps: local input is only probed with `ffprobe`, and a remote input is downloaded into a temp directory that `prepareMedia`'s `finally` removes. It is nonetheless classified as not read-only because it lives in the `local` category, while the four Gemini operations — which upload the media to Google — are classified as read-only.
-
-**Impact:** clients that auto-approve or auto-run read-only tools will prompt for the one operation that is provably side-effect free, and the annotation no longer means "writes nothing locally", which is what the four `true` values imply.
-
-**Suggested fix:** give `get_video_info` `readOnly: true` explicitly (it is the only operation that needs an exception), and update the parity assertion in [`parity.test.ts`](../../tests/contract/parity.test.ts:63) accordingly. `openWorldHint: true` for every tool is defensible, since every operation accepts a remote URL.
-
-### P3: The original design document is stale and presented as current rationale
-
-**Where:** [`findings-and-plan.md`](../../findings-and-plan.md) — status line at [line 3](../../findings-and-plan.md:3), yt-dlp design points at [lines 42](../../findings-and-plan.md:42), [84](../../findings-and-plan.md:84) and [109](../../findings-and-plan.md:109), `YT_DLP_*` settings at [line 228](../../findings-and-plan.md:228), frame sampling at [line 86](../../findings-and-plan.md:86).
-
-The document opens with "**Status:** Planning only — do not implement yet" on a shipped codebase, and it directs the reader to capabilities the code deliberately removed: yt-dlp platform downloads, the `YT_DLP_*` settings, and AI frame sampling. The README links it as "the original design rationale", so a new contributor reading the two documents in sequence gets contradictory instructions.
-
-**Suggested fix:** add a short "Superseded" header listing the decisions that changed (platform downloads disabled, `YT_DLP_*` unread, no AI-side frame sampling, `transcribe_video` writes a file) with a pointer to the README, or move the file under `docs/`.
-
-### P4: Dead `.gitignore` entry
-
-**Where:** [`.gitignore:4`](../../.gitignore).
-
-`.video-analyzer/` is ignored but nothing in `src/`, `tests/`, `skills/`, or the docs ever creates or mentions it. It is a leftover from an earlier layout; `video-analyzer-output/` on the next line is the real artifact root.
+| #   | Previous finding                                      | Verification                                                                                                                     |
+| --- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Quoted `.env` value with a trailing comment           | `parseDotEnv('A="quoted value" # note')` now returns `{"A":"quoted value"}`; covered by `dotenv.test.ts`                         |
+| 2   | Windows `.cmd` shim corrupting payloads               | The launcher stages the payload in a temp file and forwards `--input-file`; the Windows-only shim test passes                    |
+| 3   | FFmpeg cancellation reported as media failure         | `run()` classifies abort first and raises `OPERATION_CANCELLED`; two `extractFrames` tests cover cancel and the internal timeout |
+| 4   | Download timeout/cancel misclassified                 | `downloadToFile` classifies abort and deadline before the generic branches; three loopback tests cover it                        |
+| 5   | Missing `--input-file` reported as `INTERNAL`         | The CLI wraps the read and reports `INPUT_NOT_FOUND`; `cli.test.ts` asserts the code and hint                                    |
+| 6   | `transcribe_video` created directories before failing | `ensureDir` moved into `writeTranscript`; the pre-flight test asserts no directory survives `CONFIG_MISSING`                     |
+| 7   | README skip count wrong                               | Measured: 1 skip with FFmpeg, 12 without - exactly the documented 11 extra                                                       |
+| 8   | `get_video_info` not marked read-only                 | `readOnly: true` is set explicitly and `parity.test.ts` asserts the four read-only tools                                         |
+| 9   | `findings-and-plan.md` stale                          | It now opens with a **Superseded** block listing the changed decisions and pointing at the README and Skill references           |
+| 10  | Dead `.video-analyzer/` ignore entry                  | Removed from `.gitignore`                                                                                                        |
 
 ## Architecture And Quality
 
 **Strengths**
 
-- **One source of truth per concern.** [`registry.ts`](../../src/operations/registry.ts) owns names, titles, schemas, categories, and handlers; both adapters iterate it, and [`parity.test.ts`](../../tests/contract/parity.test.ts) enforces name, schema-identity, description, read-only, and destructive parity. The `satisfies readonly Operation<z.ZodTypeAny>[]` constraint keeps the inferred `OperationName` union honest.
-- **Uniform, typed error contract.** Every expected failure is a [`VideoAnalyzerError`](../../src/utils/errors.ts:46) with a stable code from a closed union, an optional hint, and structured `details`; adapters render it as JSON (CLI) or text content (MCP) without leaking stacks or secrets. The mapping defects above (findings 3–5) are visible precisely because the contract is otherwise so consistent.
-- **Deterministic services.** [`GeminiMediaService`](../../src/services/gemini.ts:230) takes injectable `api`, `now`, and `sleep`; [`runWithBounds`](../../src/utils/abort.ts:41) makes cancellation and deadlines testable without real timers; FFmpeg runs through `execFile` with argument arrays, so there is no shell and no injection surface.
-- **Explicit storage invariants.** "One artifact directory per request" is documented at the type ([`FrameExtractionOptions.outDir`](../../src/services/ffmpeg.ts:163)), enforced for the modes that list the directory, and covered by unit and integration tests.
+- **One source of truth per concern.** [`registry.ts`](../../src/operations/registry.ts) owns names, titles, schemas, categories, and handlers; both adapters iterate it, and [`parity.test.ts`](../../tests/contract/parity.test.ts) enforces name, schema identity, description, read-only, and destructive parity. The `satisfies readonly Operation<z.ZodTypeAny>[]` constraint keeps the inferred `OperationName` union honest.
+- **Uniform, typed error contract.** Every expected failure is a [`VideoAnalyzerError`](../../src/utils/errors.ts:43) with a stable code from a closed union, an optional hint, and structured `details`; adapters render it as JSON (CLI) or text (MCP) without leaking stacks or secrets. Findings 3, 4, 7 and 8 are visible precisely because the contract is otherwise so consistent.
+- **Deterministic services.** [`GeminiMediaService`](../../src/services/gemini.ts:223) takes injectable `api`, `now`, and `sleep`; [`runWithBounds`](../../src/utils/abort.ts:32) makes cancellation and deadlines testable without real timers; FFmpeg runs through `execFile` with argument arrays, so there is no shell and no injection surface.
+- **Explicit storage invariants.** "One artifact directory per request" is documented at the type ([`FrameExtractionOptions.outDir`](../../src/services/ffmpeg.ts:176)), enforced for the modes that list the directory, and covered by unit and integration tests. A failed extraction removes its partial folder.
 - **Budgets enforced during production, not after.** `-frames:v` caps interval extraction inside FFmpeg, `resolveFrameBudget` refuses to return `0` (which FFmpeg would read as unlimited), and `extractFramesAtTimestamps` stats every output instead of trusting the exit code.
-- **Strictness that pays off.** `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `verbatimModuleSyntax`, and `isolatedModules` are all enabled and the code satisfies them rather than casting around them.
-- **Docs as part of the product.** README, `SKILL.md`, and the three reference documents agree with the code on settings, error codes, exit behaviour, and Windows quirks, and a test enforces that every operation is mentioned in `SKILL.md`. Findings 7 and 9 are the exceptions.
+- **Strictness that pays off.** `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `verbatimModuleSyntax`, and `isolatedModules` are enabled and satisfied rather than cast around.
+- **Docs as part of the product.** README, `SKILL.md`, and the references agree with the code on settings, error codes, exit behaviour, and Windows quirks, and a test enforces that every operation is mentioned in `SKILL.md`. Findings 4, 7, and 8 are the exceptions.
 
 **Weaknesses**
 
-- **Process-global mutable state.** [`sharedService`](../../src/operations/shared.ts:15) and the logger [`sink`](../../src/utils/logger.ts:30) are module-level singletons with test-only reset hooks. Correct for the two shipped entry points; two embedders with different configs or sinks in one process would interfere, and nothing in the public export surface warns about it.
-- **Hard-coded FFmpeg budgets.** [`FFMPEG_TIMEOUT_MS`](../../src/services/ffmpeg.ts:10) (10 min) and [`FFPROBE_TIMEOUT_MS`](../../src/services/ffmpeg.ts:11) (60 s) are constants while every Gemini deadline is configurable. Scene detection over a feature-length file can hit the former and surface as a generic `MEDIA_PROCESSING_FAILED`; combined with finding 3, a timeout is indistinguishable from a corrupt file.
-- **Validation runs twice per call.** Each adapter validates the payload and then [`executeOperation`](../../src/operations/execute.ts:47) validates again at [line 64](../../src/operations/execute.ts:64). Harmless (parsing is idempotent) and justified as an embedder guarantee, but the operation runs the schema twice on every MCP and CLI call.
-- **No retry policy, by design and undocumented.** A transient 5xx or DNS blip fails the operation; MCP clients that auto-retry will re-upload the media, and the upload cache only helps within one process.
-- **`ensureDir` uses a dynamic import** ([`fsUtils.ts:60`](../../src/utils/fsUtils.ts:60)) while every other Node builtin is imported statically — a leftover inconsistency on a hot path.
-- **No CI.** There is no `.github/workflows`, so `npm run check` only runs when someone remembers to run it, even though the repository's branch/PR history implies a review-first workflow.
+- **Process-global mutable state.** [`sharedService`](../../src/operations/shared.ts:15) and the logger [`sink`](../../src/utils/logger.ts:30) are module-level singletons with test-only reset hooks. Correct for the two shipped entry points; two embedders with different configs or sinks in one process would interfere, and the public export surface does not warn about it.
+- **Validation runs twice per call.** Each adapter parses the payload, then [`executeOperation`](../../src/operations/execute.ts:47) parses it again. Harmless and justified as an embedder guarantee, but it is real work on every MCP and CLI call.
+- **Hard-coded FFmpeg budgets.** [`FFMPEG_TIMEOUT_MS`](../../src/services/ffmpeg.ts:10) (10 min) and [`FFPROBE_TIMEOUT_MS`](../../src/services/ffmpeg.ts:11) (60 s) are constants while every Gemini deadline is configurable; a scene extraction over a feature-length file can hit the former.
+- **Two independent budgets are coupled.** The download deadline is `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`, so allowing a large download on a slow link also gives every Gemini call a much longer deadline. A dedicated download timeout would separate them (previously noted; still true).
+- **No CI and no type-aware linting.** `oxlint` has no `no-floating-promises` or `no-misused-promises`, and the README explains why; a CI job would at least pin the build/test/format claims.
 
 ## Security Assessment
 
 The network boundary remains the strongest part of the codebase.
 
-- **SSRF defence is layered.** [`assertSafeHttpUrl`](../../src/utils/net.ts:160) rejects non-HTTP(S) schemes, embedded credentials, blocked hostnames (localhost, cloud metadata), and any host that resolves to a private, loopback, link-local, CGNAT, documentation, or multicast range. IPv6 handling covers `::1`, `::`, ULA, link-local, multicast, and IPv4-mapped/NAT64 forms, and fails closed on unparseable input. Downloads revalidate **every redirect hop** with `redirect: 'manual'` rather than letting `fetch` follow blindly.
-- **Residual risk is documented honestly.** The resolve→connect window is not pinned, so DNS rebinding remains theoretically possible; the README says so instead of over-claiming. `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` disables the whole layer for direct downloads, which is also documented.
+- **SSRF defence is layered.** [`assertSafeHttpUrl`](../../src/utils/net.ts:153) rejects non-HTTP(S) schemes, embedded credentials, loopback/metadata names, and every private or reserved address (IPv4, IPv6, IPv4-mapped, NAT64), and every redirect hop is revalidated. Resolution failures fail closed.
 - **Size bounds are enforced twice.** `Content-Length` is checked before the body is read and the byte count is checked while streaming, so a chunked response cannot exceed `maxBytes`.
 - **Command execution is safe.** FFmpeg/FFprobe run via `execFile` with argument arrays; input paths are resolved to absolute paths first, so a `videoPath` beginning with `-` cannot be read as an option.
 - **Source-media protection is thorough** for `transcribe_video`: canonical-path comparison (covering `..`, symlinks, casing) plus device/inode comparison (covering hard links) before upload, backed by an exclusive-create `wx` write so a target that appears after validation still cannot be clobbered.
-- **Secrets are never logged.** Diagnostics go to stderr or the MCP logging channel; the key is only ever handed to the SDK. `readString` trims values, which also protects against the copy-paste trailing space the README warns about.
+- **Secrets are never logged.** Diagnostics go to stderr or the MCP logging channel; the key is only handed to the SDK.
+- **Residual risk is documented honestly.** The resolve-to-connect window is not pinned, so DNS rebinding remains theoretically possible; the README says so instead of over-claiming.
 
-**Worth stating more plainly in the README:** AI operations upload user media to Google (currently only under "Known Limitations"); `transcribe_video` and `extract_frames` write to caller-chosen paths, so an agent driving them is as trustworthy as its path choice; and on Windows the Skill payload travels as a command-line argument, which other local processes can observe through the process list.
+**The one new security concern is the local trust boundary in finding 2.** The network layer is hardened while the file that usually sits next to the code - `.env` - can disable parts of it and choose the binaries that run. This is worth fixing before the network edge is worth more effort.
+
+**Worth stating more plainly in the README:** AI operations upload user media to Google (currently only under "Known Limitations"), and `transcribe_video` / `extract_frames` write to caller-chosen paths, so an agent driving them is as trustworthy as its path choice.
 
 ## Test Assessment
 
-194 passing, 1 skipped, ~6.3 s — fast enough to run on every save, which is why the findings above are small and specific.
+204 passing, 1 skipped, ~6 s - fast enough to run on every save. The suite is behaviour-oriented and the assertions are specific.
 
-| Area                         | Coverage | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gemini timeouts/cancellation | Strong   | Stalled generation, stalled status poll, stalled upload, pre-aborted signal, upload time counted against the processing deadline, signal + deadline handed to the SDK, MCP cancellation propagation, shared upload surviving its initiator's cancellation.                                                                                                                                                                               |
-| Frame budgets                | Strong   | Budget passed as `-frames:v`, on-disk count capped, uncapped config still bounded, paging does not change the produced count, sub-minimum interval rejected before any process runs, `resolveFrameBudget` edge cases.                                                                                                                                                                                                                    |
-| Output isolation             | Strong   | Reused directories report only their own frames; pre-populated directories rejected without invoking FFmpeg; integration test reuses one parent directory.                                                                                                                                                                                                                                                                               |
-| Source overwrite protection  | Strong   | Relative spelling, `file://`, symlink, hard link, symlinked parent, existing file, directory target, exclusive-create race.                                                                                                                                                                                                                                                                                                              |
-| SSRF / download policy       | Good     | Private and reserved ranges, IPv6 forms, credentials, platform-page rejection, opt-in behaviour, declared and streamed size limits, redirect revalidation.                                                                                                                                                                                                                                                                               |
-| CLI / MCP parity             | Good     | Names, schema object identity, descriptions, read-only classification, forbidden capability names, tool listing over a real in-memory MCP client.                                                                                                                                                                                                                                                                                        |
-| **Gaps**                     | —        | (a) no test for a quoted `.env` value with a trailing comment (finding 1); (b) no test for cancelling a local FFmpeg call (finding 3); (c) `downloadToFile`'s timeout and cancellation mapping is untested (finding 4); (d) no test for a missing `--input-file` (finding 5); (e) no launcher test with `&`/`\|` in the payload (finding 2); (f) the Windows link/case tests self-skip, so a Windows run covers less than it appears to. |
+| Area                         | Coverage | Notes                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gemini timeouts/cancellation | Strong   | Stalled generation, status poll and upload; pre-aborted signal; upload time counted against the processing deadline; signal and deadline handed to the SDK; MCP cancellation propagation; a shared upload surviving its initiator's cancellation                                                                                                                                               |
+| Frame budgets                | Strong   | Budget passed as `-frames:v`, on-disk count capped, uncapped config still bounded, paging does not change the produced count, sub-minimum interval rejected before any process runs, `resolveFrameBudget` edge cases                                                                                                                                                                           |
+| Output isolation             | Strong   | Reused directories report only their own frames; pre-populated directories rejected without invoking FFmpeg; integration test reuses one parent directory                                                                                                                                                                                                                                      |
+| Source overwrite protection  | Strong   | Relative spelling, `file://`, symlink, hard link, symlinked parent, existing file, directory target, exclusive-create race                                                                                                                                                                                                                                                                     |
+| SSRF / download policy       | Strong   | Private and reserved ranges, IPv6 forms, credentials, platform-page rejection, opt-in behaviour, declared and streamed size limits, redirect revalidation, timeout and cancellation classification                                                                                                                                                                                             |
+| CLI / MCP parity             | Strong   | Names, schema object identity, descriptions, read-only and destructive classification, forbidden capability names, a real in-memory MCP client                                                                                                                                                                                                                                                 |
+| Skill launcher               | Good     | Listing, missing input, and the Windows `.cmd` metacharacter path. **Gaps:** the suite depends on a prior build (finding 1), and `help <operation>` is untested and broken (finding 5)                                                                                                                                                                                                         |
+| **Gaps**                     | -        | (a) no test for an unusable `outputDir` / `VIDEO_ANALYZER_OUTPUT_DIR` (finding 3); (b) no assertion that the transcript survives a failed write (finding 4); (c) no test that `.env` cannot change `PATH`/`FFMPEG_PATH` or the SSRF opt-in (finding 2); (d) no upload-cache test for URL inputs (finding 6); (e) no test of the documented `--version`/`help`/`list` output shapes (finding 7) |
 
-The integration and Skill suites skip themselves when FFmpeg is missing. The README warns about this, but the number it quotes is wrong (finding 7) and nothing makes the skips visible in a CI log, so a "green" run without FFmpeg looks identical to a fully exercised one.
+The integration and Skill suites skip themselves when FFmpeg is missing; the README's "11 tests" is accurate (verified), and the always-skipped symlink case on Windows is the twelfth skip. Nothing surfaces the skip count in CI, so a run without FFmpeg still looks green.
 
 ## Verification Performed
 
@@ -244,62 +261,60 @@ The integration and Skill suites skip themselves when FFmpeg is missing. The REA
 npm run check
   typecheck  tsc -p tsconfig.json --noEmit        clean
   lint       oxlint src tests skills              clean
-  test       vitest run                           19 files, 194 passed, 1 skipped
+  test       vitest run                           19 files, 204 passed, 1 skipped (205), ~6 s
   format     prettier --check .                   clean
 
 npm run build                                     clean (dist/cli.js, dist/mcp.js)
 
-FFMPEG_PATH=missing FFPROBE_PATH=missing vitest run
-                                                  183 passed, 12 skipped (18 files passed, 1 skipped)
+npx vitest run tests/skill tests/contract          15 passed
+
+FFMPEG_PATH=missing FFPROBE_PATH=missing npx vitest run
+                                                   193 passed, 12 skipped (19 files)
 ```
 
-Manual probes against the built `dist/` (scripted, temp directories only, no repository writes):
+Manual probes against the built `dist/` (temp directories only, no repository writes):
 
-- `.env` parsing of `A="quoted value" # trailing note` → value keeps quotes and comment (finding 1).
-- Skill launcher via a stand-in `video-analyzer.cmd` shim: `&` payload → `INVALID_INPUT: Arguments must be valid JSON`; `|` payload → exit 255 with no envelope (finding 2).
-- `extract_frames` interval run aborted after 150 ms → `MEDIA_PROCESSING_FAILED: ffmpeg failed.` with a `showinfo` tail (finding 3).
-- `downloadToFile` against a hanging local server (300 ms deadline) → `DOWNLOAD_FAILED` + network hint; against a stalling server with a caller abort → `DOWNLOAD_FAILED: Failed to write …` (finding 4).
-- `node dist/cli.js get_video_info --input-file ./does-not-exist.json` → `INTERNAL` (finding 5).
-- `transcribe_video` with a nested `outputPath` and no key → `CONFIG_MISSING`, and the parent directories exist afterwards (finding 6).
-- Full suite with FFmpeg hidden → 11 additional skips (finding 7).
+- `extract_frames` with `outputDir` set to an existing file -> `INTERNAL: ENOTDIR: not a directory, mkdir '…'` (finding 3).
+- Working directory containing `.env` with `FFPROBE_PATH=definitely-not-a-real-ffprobe` -> `DEPENDENCY_MISSING` naming the injected binary (finding 2).
+- `node skills/video-analyzer/scripts/invoke.mjs help extract_frames` -> general usage; the same command on `dist/cli.js` prints the operation schema (finding 5).
+- `node dist/cli.js --version` -> `0.1.0`; `help get_video_info` -> plain text (finding 7).
+- Skill suite with `dist/` renamed -> 2 of 8 tests fail with `INTERNAL: The video-analyzer CLI produced no output` (finding 1).
+- `.env` parsing of `A="quoted value" # trailing note` -> `{"A":"quoted value"}` (previous finding 1 resolved).
+- CLI run with an idle open stdin pipe -> exits normally with the error envelope (previous stdin concern resolved).
+- Full suite with FFmpeg hidden -> 11 additional skips, matching the README.
 
 ## Recommendations
 
-1. **Fix the two P2s first.** Both are silent-configuration defects that surface as unrelated failures ("bad API key", "invalid JSON"), and each is a few lines plus a test.
-2. **Make cancellation a first-class outcome everywhere.** One mapping (`signal.aborted` → cancellation error) applied to FFmpeg, downloads, and Gemini would remove findings 3 and 4 and make the documented cancellation story true for every operation, not just the AI ones.
-3. **Add CI.** One workflow matrixed over `ubuntu-latest` and `windows-latest` running `npm run check`, with FFmpeg installed so integration tests actually execute, and the skip count echoed. The Windows leg is the only place finding 2 and the platform-dependent link tests get real coverage.
-4. **Close the five test gaps** listed above; each maps to a defect already demonstrated, so the tests are cheap and would have caught the bug.
-5. **Consider making the FFmpeg budgets configurable** (`VIDEO_ANALYZER_FFMPEG_TIMEOUT_MS`, `VIDEO_ANALYZER_FFPROBE_TIMEOUT_MS`) and giving a timeout a distinct error code, so it is not reported as a corrupt file.
-6. **Tidy the documents.** Correct the skip count, mark `findings-and-plan.md` as superseded, drop the dead `.gitignore` entry, and state the outbound-upload behaviour in the README's main body rather than only under Known Limitations.
+1. **Add CI.** One workflow matrixed over `ubuntu-latest` and `windows-latest` running `npm run check`, with FFmpeg installed so integration tests actually execute, and the skip count echoed. The Windows leg is the only place the `.cmd` shim handling and the platform-dependent link tests get real coverage. (The build step the gate needs is now part of `npm test` via `pretest`, so the workflow itself is a thin wrapper.)
+2. **Keep `.env` a convenience, not a trust grant.** The allowlist in `DOTENV_KEYS` is the enforcement point; any new setting added to configuration should be considered deliberately before it is allowed there.
+3. **Separate the download and Gemini budgets.** The download deadline is still `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`, so raising it for a large download also lengthens every Gemini call; a dedicated download timeout would decouple them.
+4. **Pin the new contracts with tests as they evolve:** the `.env` allowlist, `OUTPUT_FAILED` on an unusable artifact root, the transcript-survives-write-failure path, the launcher's `help`/`list` operands, and the URL upload identity.
 
 ## Resolution Status
 
-All ten findings were resolved on 2026-11-11. `npm run check` is green — typecheck, oxlint, **204 passed / 1 skipped** (ten tests added), Prettier — and `npm run build` is clean.
+All ten findings were resolved on 2026-11-11, **except adding CI**, which is deliberately out of scope for this pass. `npm run check` is green — typecheck, oxlint, **225 passed / 1 skipped** (21 tests added), Prettier — and `npm run build` is clean.
 
-| #   | Resolution                                                                                                                                                                                                                                                                                                                    |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `parseDotEnv` now scans for the closing quote and accepts only whitespace or a comment after it, so `KEY="value" # note` yields `value`. Two cases added to `dotenv.test.ts` (quoted + comment, and `#` inside a quoted value that also has a comment).                                                                       |
-| 2   | When the launcher resolves to a batch shim it stages the payload in a temp file and forwards `--input-file`, so no user data reaches `cmd.exe`; the file is removed in a `finally`. `skill.test.ts` gains a Windows-only test that drives a stand-in `.cmd` shim with `a&b\|c^d.mp4`.                                         |
-| 3   | `run()` in `ffmpeg.ts` classifies `signal.aborted`/`AbortError` first and raises the new `OPERATION_CANCELLED`; a killed child that hit its timeout now says `ffmpeg did not finish within N ms` instead of "ffmpeg failed", so neither is confused with corrupt media. Both paths have new tests in `extractFrames.test.ts`. |
-| 4   | `downloadToFile` classifies abort before the generic branches: caller cancellation → `OPERATION_CANCELLED`, expired deadline → `DOWNLOAD_FAILED` naming the elapsed budget with a hint about `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`. Three `downloadToFile` tests added against real loopback servers.                           |
-| 5   | `--input-file` read failures map to `INPUT_NOT_FOUND` (with a hint pointing at `--input`/stdin), matching what the Skill launcher already reported. Covered by a new CLI test.                                                                                                                                                |
-| 6   | Parent-directory creation moved from `resolveTranscriptTarget` into `writeTranscript`, so validation creates nothing; a `CONFIG_MISSING` request now leaves no directories. Covered by a new pre-flight test.                                                                                                                 |
-| 7   | README says 11 (measured: 1 skip with FFmpeg, 12 without).                                                                                                                                                                                                                                                                    |
-| 8   | `get_video_info` sets `readOnly: true`, the `Operation.readOnly` doc explains the explicit opt-in, and `parity.test.ts` asserts the four read-only tools.                                                                                                                                                                     |
-| 9   | `findings-and-plan.md` opens with a **Superseded** block listing the three changed decisions and pointing at the README and Skill references.                                                                                                                                                                                 |
-| 10  | The `.video-analyzer/` entry is gone from `.gitignore`.                                                                                                                                                                                                                                                                       |
+| #   | Resolution                                                                                                                                                                                                                                                                                                                                                                  |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `"pretest": "npm run build"` makes `npm test` and `npm run check` build before the Skill suite drives `dist/`. The Skill suite also fails with an explicit "run `npm run build`" message instead of "produced no output". Verified by renaming `dist/`: `npm test` rebuilt it and passed 225/1.                                                                             |
+| 2   | `.env` is now an allowlist: `applyDotEnv` / `DOTENV_KEYS` accepts only `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings; `PATH`, `FFMPEG_PATH`, `FFPROBE_PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` are ignored. Verified: a working directory with a `.env` setting `FFPROBE_PATH`/`PATH` no longer changes the binary or the search path.       |
+| 3   | `createArtifactDir` maps a failed `mkdir` to `OUTPUT_FAILED` naming `outputDir` (or `VIDEO_ANALYZER_OUTPUT_DIR`) with `details.code`, instead of leaking `ENOTDIR` as `INTERNAL`.                                                                                                                                                                                           |
+| 4   | A failed transcript write no longer discards the text: the operation returns it in `summary`, adds a warning naming the target and OS error code, and reports `data.outputWritten: false`. `troubleshooting.md` and `operations.md` were corrected to match.                                                                                                                |
+| 5   | The launcher forwards `help`/`list` operands positionally instead of folding them into `--input`, and `fail()` flushes both streams before exiting. `invoke.mjs help extract_frames` now prints the operation schema.                                                                                                                                                       |
+| 6   | `ResolvedMedia.cacheKey` identifies a direct download by origin (`direct:<finalUrl>:<bytes>`), and `EnsureUploadedParams.cacheKey` overrides the path-based key, so a repeated URL in one session reuses the upload. Threaded through `statForUpload` into all four AI operations.                                                                                          |
+| 7   | README states that operations and `list` print JSON while `--version` and `help` print plain text; `CLI_USAGE` gained the upload/poll settings and the `.env` restriction.                                                                                                                                                                                                  |
+| 8   | Corrected the trailing-space wording (it is trimmed; quotes in a real variable are kept), and `DEPENDENCY_MISSING` now names a configured binary path instead of saying "on PATH". Also fixed "lower ceiling" → "tighter ceiling" and described artifact cleanup as best-effort.                                                                                            |
+| 9   | `search_timestamp` always includes `durationSeconds` and `raw`, and warns when a reported timestamp is past the clip. `extract_frames` says when an `offset` is past the produced set instead of "Extracted 0 frame(s)". A whitespace-only reply is treated as `NO_SPEECH`.                                                                                                 |
+| 10  | `video-analyzer-output/` is in `.prettierignore`; the temp sweep now also removes stale launcher payload files; `package.json` gained `repository`/`bugs`/`homepage`; dead surface was removed (`DownloadOptions.headers`, `resolveMimeType`'s unused override, unused `Artifact.kind` values); `ensureDir` imports `mkdir` statically. **CI was intentionally not added.** |
 
-**Additional change that this work required:** cancellation had no honest code of its own, so `OPERATION_CANCELLED` was added to `ERROR_CODES` and is now raised by Gemini calls, FFmpeg runs, and downloads alike. `README.md`, `SKILL.md`, and `troubleshooting.md` document it, and the `GEMINI_TIMEOUT` section no longer claims to cover cancellation. This supersedes the pre-fix behaviour described in finding 3's impact paragraph.
-
-Re-probed against the rebuilt `dist/`:
+Runtime re-checks against the rebuilt `dist/`:
 
 ```text
-dotenv  GEMINI_API_KEY="abc123" # aistudio   → "abc123"
-        R="has # hash"                       → "has # hash"
-download timeout (300 ms)                    → DOWNLOAD_FAILED: The download did not finish within 300 ms.
-download aborted mid-stream                  → OPERATION_CANCELLED: The operation was cancelled.
-ffmpeg run aborted after 150 ms              → OPERATION_CANCELLED (no encoder log in the hint)
-cli --input-file ./nope.json                 → INPUT_NOT_FOUND: Input file not found: ./nope.json
-transcribe_video, nested outputPath, no key  → CONFIG_MISSING, parent dir created: false
-skill launcher via .cmd shim, "a&b|c^d.mp4"  → INPUT_NOT_FOUND (JSON survived the shell)
+.env with FFPROBE_PATH + PATH + ALLOW_PRIVATE_HOSTS  → ignored; probe used the real ffprobe
+extract_frames, outputDir is a file                  → OUTPUT_FAILED (hint names outputDir, details.code ENOTDIR)
+extract_frames, offset 9 past 3 produced frames       → "No frames on this page: offset 9 is past the 3 frame(s)…"
+FFPROBE_PATH=C:\definitely\missing\ffprobe.exe        → DEPENDENCY_MISSING "The configured media binary was not found: …"
+invoke.mjs help extract_frames                        → "extract_frames — Extract Frames … Input schema:"
+invoke.mjs (no operation)                             → complete INVALID_INPUT envelope on stdout, exit 1
+rm -rf dist && npm test                               → pretest rebuilt dist; 225 passed / 1 skipped
 ```

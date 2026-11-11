@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { formatBytes, formatTimestamp } from '../../src/operations/shared.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { loadConfig } from '../../src/config.js'
+import { createArtifactDir, formatBytes, formatTimestamp } from '../../src/operations/shared.js'
 
 describe('formatTimestamp', () => {
   it('renders HH:MM:SS.mmm', () => {
@@ -26,5 +30,49 @@ describe('formatBytes', () => {
     expect(formatBytes(512)).toBe('512 B')
     expect(formatBytes(2048)).toBe('2.0 KB')
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB')
+  })
+})
+
+/**
+ * A base directory that cannot be created is a caller mistake, so it must not
+ * surface as `INTERNAL` with a raw filesystem message.
+ */
+describe('createArtifactDir', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-artifact-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('creates a new subdirectory of the requested base', async () => {
+    const created = await createArtifactDir(loadConfig({}), 'frames', dir)
+    expect(path.dirname(created)).toBe(path.resolve(dir))
+  })
+
+  it('reports a file used as outputDir as OUTPUT_FAILED naming the argument', async () => {
+    const file = path.join(dir, 'not-a-dir.txt')
+    await writeFile(file, 'x', 'utf8')
+
+    await expect(createArtifactDir(loadConfig({}), 'frames', file)).rejects.toMatchObject({
+      code: 'OUTPUT_FAILED',
+      hint: expect.stringContaining('outputDir'),
+      details: { outputDir: path.resolve(file) },
+    })
+  })
+
+  it('names the setting when the configured output root is unusable', async () => {
+    const file = path.join(dir, 'root.txt')
+    await writeFile(file, 'x', 'utf8')
+
+    await expect(
+      createArtifactDir(loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: file }), 'frames'),
+    ).rejects.toMatchObject({
+      code: 'OUTPUT_FAILED',
+      hint: expect.stringContaining('VIDEO_ANALYZER_OUTPUT_DIR'),
+    })
   })
 })

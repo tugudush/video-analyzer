@@ -84,4 +84,14 @@ describe('loadDotEnvInto', () => {
     expect(target.FRESH).toBe('filled')
     expect(target.BLANK).toBe('from-file')
   })
+
+  it('only contributes allowlisted keys', () => {
+    const target: NodeJS.ProcessEnv = {}
+    const applied = loadDotEnvInto(target, 'tests/fixtures/dotenv/sample.env', {
+      allowKeys: ['GEMINI_API_KEY', 'QUOTED'],
+    })
+
+    expect(applied).toEqual(['GEMINI_API_KEY', 'QUOTED'])
+    expect(target).toEqual({ GEMINI_API_KEY: 'from-file', QUOTED: 'value with spaces' })
+  })
 })

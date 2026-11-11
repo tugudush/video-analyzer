@@ -3,10 +3,25 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 const execFileAsync = promisify(execFile)
 const SKILL_DIR = path.resolve('skills', 'video-analyzer')
+
+/**
+ * These tests drive the packaged launcher, which runs the compiled CLI. `npm test`
+ * builds first; a direct `npx vitest` run on a clean checkout would otherwise
+ * fail with an obscure "produced no output" error.
+ */
+beforeAll(async () => {
+  try {
+    await stat(path.resolve(SKILL_DIR, '..', '..', 'dist', 'cli.js'))
+  } catch {
+    throw new Error(
+      'The Skill suite runs the packaged launcher, so dist/ must be built. Run `npm run build` (npm test does this automatically).',
+    )
+  }
+})
 
 interface Frontmatter {
   name?: string
@@ -97,6 +112,26 @@ describe('video-analyzer Skill package', () => {
     const payload = JSON.parse(stdout) as { ok: boolean; operations: Array<{ name: string }> }
     expect(payload.ok).toBe(true)
     expect(payload.operations).toHaveLength(6)
+  })
+
+  /**
+   * `help <operation>` is the documented way to discover an operation's schema,
+   * so its operand must reach the CLI as an operand rather than as a JSON payload.
+   */
+  it('launcher passes the help operand through to the CLI', async () => {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [path.join(SKILL_DIR, 'scripts', 'invoke.mjs'), 'help', 'extract_frames'],
+      {
+        timeout: 30_000,
+        windowsHide: true,
+        env: { ...process.env, VIDEO_ANALYZER_LOG_LEVEL: 'silent' },
+      },
+    )
+
+    expect(stdout).toContain('extract_frames')
+    expect(stdout).toContain('Input schema')
+    expect(stdout).not.toContain('Usage:')
   })
 
   it('launcher reports missing input as a JSON error', async () => {

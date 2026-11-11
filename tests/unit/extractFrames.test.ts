@@ -335,6 +335,44 @@ describe('extract_frames frame budgets', () => {
       }).success,
     ).toBe(true)
   })
+
+  it('says no frames are on a page past the produced set', async () => {
+    installFakes({ durationSeconds: 4 })
+    const config = loadConfig({})
+    const outputDir = path.join(dir, 'frames')
+
+    const result = await executeOperation(
+      extractFramesOperation,
+      { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 2, offset: 9, outputDir },
+      config,
+    )
+
+    expect(result.images).toEqual([])
+    expect(result.data).toMatchObject({ totalFrames: 4, offset: 9, hasMore: false })
+    expect(result.summary).toContain('No frames on this page')
+    expect(result.summary).toContain('4 frame(s)')
+  })
+
+  it('names the configured binary when it is missing instead of saying "on PATH"', async () => {
+    const missing = path.join(tmpdir(), 'missing-tools', 'ffprobe.exe')
+    mocks.execFile.mockImplementation(
+      (_file: string, _args: string[], _opts: unknown, cb: Callback) => {
+        cb(Object.assign(new Error('spawn ffprobe.exe ENOENT'), { code: 'ENOENT' }))
+      },
+    )
+
+    await expect(
+      executeOperation(
+        extractFramesOperation,
+        { videoPath: source, mode: 'even' },
+        loadConfig({ FFPROBE_PATH: missing }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'DEPENDENCY_MISSING',
+      message: expect.stringContaining(missing),
+      details: { binary: missing },
+    })
+  })
 })
 
 describe('extract_frames output directory isolation', () => {

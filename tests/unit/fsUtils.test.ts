@@ -1,8 +1,9 @@
-import { link, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { link, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { canonicalPath, isSameFile } from '../../src/utils/fsUtils.js'
+import { canonicalPath, isSameFile, sweepStaleTempDirs } from '../../src/utils/fsUtils.js'
 
 async function tryLinkDir(target: string, linkPath: string): Promise<boolean> {
   try {
@@ -105,5 +106,39 @@ describe('isSameFile', () => {
     }
 
     expect(await isSameFile(source, variant)).toBe(true)
+  })
+})
+
+/**
+ * A killed Skill launcher leaves its staged JSON payload behind; that file holds
+ * media paths and questions, so the sweep must not only look at directories.
+ */
+describe('sweepStaleTempDirs', () => {
+  const base = tmpdir()
+  const stamp = `${process.pid}-${randomUUID().slice(0, 8)}`
+  const payload = path.join(base, `video-analyzer-input-${stamp}.json`)
+  const staleDir = path.join(base, `video-analyzer-sweep-${stamp}`)
+  const recentFile = path.join(base, `video-analyzer-input-${stamp}-recent.json`)
+
+  afterEach(async () => {
+    await rm(payload, { force: true })
+    await rm(recentFile, { force: true })
+    await rm(staleDir, { recursive: true, force: true })
+  })
+
+  it('removes stale payload files and directories but keeps recent ones', async () => {
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000)
+    await writeFile(payload, '{}', 'utf8')
+    await writeFile(recentFile, '{}', 'utf8')
+    await mkdir(staleDir)
+    await utimes(payload, hourAgo, hourAgo)
+    await utimes(staleDir, hourAgo, hourAgo)
+
+    await sweepStaleTempDirs(60 * 1000)
+
+    await expect(stat(payload)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(staleDir)).rejects.toMatchObject({ code: 'ENOENT' })
+    // A payload that may still belong to a running launcher is left alone.
+    await expect(stat(recentFile)).resolves.toBeDefined()
   })
 })

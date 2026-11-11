@@ -113,19 +113,25 @@ Input:
   the arguments are long or contain Windows path backslashes.
 
 Output:
-  A single JSON envelope on stdout. Diagnostics go to stderr only.
+  Operations and "list" print a single JSON envelope on stdout. "--version" and
+  "help" print plain text. Diagnostics go to stderr only.
 
 Environment:
   GEMINI_API_KEY                     Required for Gemini-backed operations
   GEMINI_MODEL                       Override the default Gemini model
-  VIDEO_ANALYZER_MAX_FRAMES          Frame budget for sampling/extraction (default 100,
-                                     0 = only the 500-frame hard cap)
+  VIDEO_ANALYZER_MAX_FRAMES          Frame budget for interval and scene extraction
+                                     (default 100, 0 = only the 500-frame hard cap)
   VIDEO_ANALYZER_DOWNLOAD_MAX_MB     Remote download size limit
-  VIDEO_ANALYZER_REQUEST_TIMEOUT_MS  AI request timeout
+  VIDEO_ANALYZER_REQUEST_TIMEOUT_MS  Deadline for each Gemini call
+  VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS   Budget for upload + processing until ACTIVE
+  VIDEO_ANALYZER_POLL_INTERVAL_MS    Upload status poll interval
   VIDEO_ANALYZER_OUTPUT_DIR          Base directory for generated artifacts
   VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS Allow private/loopback direct media hosts
   VIDEO_ANALYZER_LOG_LEVEL           silent|error|warn|info|debug
   FFMPEG_PATH / FFPROBE_PATH
+
+  A .env file in the working directory may only set the GEMINI_* and
+  VIDEO_ANALYZER_* settings above; it cannot change PATH or FFMPEG_PATH/FFPROBE_PATH.
 `
 
 interface ParsedArgs {

@@ -25,7 +25,8 @@ order:
    Restart VS Code afterwards. Windows writes the registry entry immediately, but a process only
    receives an environment snapshot at startup, and the integrated terminal inherits VS Code's
    environment rather than the registry — so restarting the terminal alone changes nothing.
-   Type the value without surrounding quotes and without a trailing space; both yield an invalid key.
+   Type the value without surrounding quotes; a real environment variable keeps them literally,
+   while a trailing space is trimmed.
 
    macOS / Linux:
 
@@ -41,6 +42,12 @@ order:
    follow a bare value or a quoted one (`GEMINI_API_KEY="…" # aistudio`).
    Malformed lines are skipped silently, and escape sequences are not
    interpreted.
+
+   The file is treated as **untrusted**: it travels with whatever repository the
+   agent is working in, so only `GEMINI_API_KEY`, `GEMINI_MODEL`, and the
+   `VIDEO_ANALYZER_*` settings are read from it. `PATH`, `FFMPEG_PATH`,
+   `FFPROBE_PATH`, and `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` are ignored there;
+   set those in the real environment.
 
    ```bash
    cp .env.example .env    # then set GEMINI_API_KEY
@@ -80,13 +87,13 @@ verbatim. No silent model substitution happens.
 
 ## Limits
 
-| Variable                            | Default  | Purpose                                                                                                                                                                                                                                                                                                                                                 |
-| ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_MAX_FRAMES`         | `100`    | Frame budget for `extract_frames`: `interval` mode stops at it and scene mode uses it as a lower ceiling. AI operations always send the whole media file to Gemini, so this does not change their behaviour. `0` removes the configured ceiling, but a 500-frame hard ceiling per extraction still applies, and scene mode is capped at 200 regardless. |
-| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | `2048`   | Maximum size of a remote download.                                                                                                                                                                                                                                                                                                                      |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | `300000` | Deadline for a single Gemini call: the upload request, each file-status poll, or a generation request. An upload or poll is also bounded by what is left of `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`, and the shorter of the two applies. A stalled call fails with `GEMINI_TIMEOUT`, and the hint names the setting that applied.                            |
-| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`  | `600000` | Total budget for uploading the media and waiting for it to become `ACTIVE`. The clock starts before the upload, so a slow upload leaves less time for processing.                                                                                                                                                                                       |
-| `VIDEO_ANALYZER_POLL_INTERVAL_MS`   | `2000`   | Upload status poll interval.                                                                                                                                                                                                                                                                                                                            |
+| Variable                            | Default  | Purpose                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_MAX_FRAMES`         | `100`    | Frame budget for `extract_frames`: `interval` mode stops at it, and scene mode uses it as a tighter ceiling. AI operations always send the whole media file to Gemini, so this does not change their behaviour. `0` removes the configured ceiling, but a 500-frame hard ceiling per extraction still applies, and scene mode is capped at 200 regardless. |
+| `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`    | `2048`   | Maximum size of a remote download.                                                                                                                                                                                                                                                                                                                         |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS` | `300000` | Deadline for a single Gemini call: the upload request, each file-status poll, or a generation request. An upload or poll is also bounded by what is left of `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`, and the shorter of the two applies. A stalled call fails with `GEMINI_TIMEOUT`, and the hint names the setting that applied.                               |
+| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`  | `600000` | Total budget for uploading the media and waiting for it to become `ACTIVE`. The clock starts before the upload, so a slow upload leaves less time for processing.                                                                                                                                                                                          |
+| `VIDEO_ANALYZER_POLL_INTERVAL_MS`   | `2000`   | Upload status poll interval.                                                                                                                                                                                                                                                                                                                               |
 
 ## Output
 
@@ -96,18 +103,18 @@ verbatim. No silent model substitution happens.
 
 ## Binaries
 
-| Variable       | Default   | Purpose             |
-| -------------- | --------- | ------------------- |
-| `FFMPEG_PATH`  | `ffmpeg`  | ffmpeg executable.  |
-| `FFPROBE_PATH` | `ffprobe` | ffprobe executable. |
+| Variable       | Default   | Purpose                                                             |
+| -------------- | --------- | ------------------------------------------------------------------- |
+| `FFMPEG_PATH`  | `ffmpeg`  | ffmpeg executable. Environment only — a `.env` file cannot set it.  |
+| `FFPROBE_PATH` | `ffprobe` | ffprobe executable. Environment only — a `.env` file cannot set it. |
 
 The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
 
 ## Network
 
-| Variable                             | Default | Purpose                                                                                         |
-| ------------------------------------ | ------- | ----------------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false` | Allow loopback, private, link-local, and metadata addresses. Only enable for media you control. |
+| Variable                             | Default | Purpose                                                                                                                                         |
+| ------------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false` | Allow loopback, private, link-local, and metadata addresses. Only enable for media you control. Environment only — a `.env` file cannot set it. |
 
 ## Diagnostics
 

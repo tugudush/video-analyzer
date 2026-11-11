@@ -2,10 +2,10 @@ import type { z } from 'zod'
 import type { Config } from '../config.js'
 import type { Logger } from '../utils/logger.js'
 
-/** A file the caller may keep (transcript, extracted frames). */
+/** A file the caller may keep (extracted frames are reported as images). */
 export interface Artifact {
   path: string
-  kind: 'transcript' | 'video' | 'frame' | 'metadata'
+  kind: 'transcript'
   mimeType?: string
   label?: string
 }

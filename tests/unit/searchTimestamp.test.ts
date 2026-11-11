@@ -1,5 +1,29 @@
-import { describe, expect, it } from 'vitest'
-import { parseTimestampMatches } from '../../src/operations/searchTimestamp.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { loadConfig } from '../../src/config.js'
+import {
+  parseTimestampMatches,
+  searchTimestampOperation,
+} from '../../src/operations/searchTimestamp.js'
+import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
+import { createLogger } from '../../src/utils/logger.js'
+import type { OperationContext } from '../../src/operations/types.js'
+
+// The operation only needs a duration; the search rules are unrelated to ffprobe.
+vi.mock('../../src/services/ffmpeg.js', () => ({
+  getMediaMetadata: vi.fn(async () => ({
+    durationSeconds: 20,
+    container: 'mov,mp4,m4a,3gp,3g2,mj2',
+    sizeBytes: 4096,
+    bitRate: 32000,
+    hasVideo: true,
+    hasAudio: true,
+    video: undefined,
+    audio: undefined,
+  })),
+}))
 
 describe('parseTimestampMatches', () => {
   it('parses start and end timestamps with a description', () => {
@@ -44,5 +68,69 @@ describe('parseTimestampMatches', () => {
 
   it('keeps a placeholder description when the line has none', () => {
     expect(parseTimestampMatches('MATCH 3')[0]?.description).toBe('No description provided.')
+  })
+})
+
+function createService(reply: string): GeminiMediaService {
+  const handle = {
+    name: 'files/abc',
+    uri: 'https://generativelanguage.test/v1beta/files/abc',
+    mimeType: 'video/mp4',
+    state: 'ACTIVE',
+  }
+  const api = {
+    uploadFile: vi.fn(async () => handle),
+    getFile: vi.fn(async () => handle),
+    generateContent: vi.fn(async () => reply),
+  }
+  return new GeminiMediaService({
+    config: loadConfig({}),
+    logger: createLogger('silent'),
+    api: api as unknown as GeminiApi,
+    sleep: async () => undefined,
+  })
+}
+
+function createContext(service: GeminiMediaService): OperationContext {
+  return { config: loadConfig({}), logger: createLogger('silent'), geminiService: service }
+}
+
+/** Every result carries the clip duration so a caller can sanity-check a match. */
+describe('search_timestamp result shape', () => {
+  let dir: string
+  let source: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-search-'))
+    source = path.join(dir, 'sample.mp4')
+    await writeFile(source, 'placeholder media bytes')
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reports the duration and the raw reply when nothing matches', async () => {
+    const result = await searchTimestampOperation.run(
+      { videoPath: source, query: 'a red car' },
+      createContext(createService('NO_MATCH — no red car appears in the clip.')),
+    )
+
+    expect(result.data).toMatchObject({
+      found: false,
+      matches: [],
+      durationSeconds: 20,
+      raw: 'NO_MATCH — no red car appears in the clip.',
+    })
+  })
+
+  it('warns when a reported timestamp is past the end of the clip', async () => {
+    const result = await searchTimestampOperation.run(
+      { videoPath: source, query: 'a red car' },
+      createContext(createService('MATCH 999 1000 — a red car passes the camera')),
+    )
+
+    expect(result.data).toMatchObject({ found: true, durationSeconds: 20 })
+    expect(result.warnings?.join(' ')).toContain('beyond the 00:00:20.000 clip')
   })
 })

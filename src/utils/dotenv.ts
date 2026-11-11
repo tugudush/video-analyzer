@@ -17,6 +17,8 @@ import path from 'node:path'
  *   not interpreted.
  * - A trailing `# comment` is dropped, whether it follows a bare value or a
  *   quoted one (`KEY="value" # note`).
+ * - The file is untrusted input (it travels with a repository), so callers may
+ *   restrict which keys it may contribute; see `allowKeys`.
  */
 
 const LINE_PATTERN = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/
@@ -74,9 +76,17 @@ export function parseDotEnv(source: string): Record<string, string> {
 /**
  * Load a `.env` file into `target`.
  *
+ * `allowKeys` restricts which variables the file may contribute. It is used for
+ * `.env` files found in the working directory, which are untrusted input, so a
+ * file that cannot choose the media binaries or relax the network policy.
+ *
  * @returns The names of the variables that were actually applied.
  */
-export function loadDotEnvInto(target: NodeJS.ProcessEnv, filePath?: string): string[] {
+export function loadDotEnvInto(
+  target: NodeJS.ProcessEnv,
+  filePath?: string,
+  options: { allowKeys?: readonly string[] } = {},
+): string[] {
   const resolved = filePath ?? path.join(process.cwd(), '.env')
 
   let source: string
@@ -86,8 +96,10 @@ export function loadDotEnvInto(target: NodeJS.ProcessEnv, filePath?: string): st
     return []
   }
 
+  const allowed = options.allowKeys ? new Set(options.allowKeys) : undefined
   const applied: string[] = []
   for (const [key, value] of Object.entries(parseDotEnv(source))) {
+    if (allowed && !allowed.has(key)) continue
     if (target[key] !== undefined && target[key] !== '') continue
     target[key] = value
     applied.push(key)
