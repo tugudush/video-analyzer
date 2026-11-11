@@ -68,8 +68,17 @@ try a shorter clip or an MP4/H.264/AAC re-export.
 
 ## GEMINI_TIMEOUT
 
-Large uploads can take minutes. Either retry, raise
-`VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`, or trim the clip.
+The message tells which budget ran out:
+
+- `Gemini did not respond within N ms (stage)` — one call (upload, status poll, or
+  generation) exceeded `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`. Retry, raise it, or use
+  a shorter clip.
+- `Gemini did not finish processing the media in time` — the upload plus the wait
+  for `ACTIVE` exceeded `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`. Large uploads can take
+  minutes, so raise it or trim the clip.
+- `The Gemini request was cancelled` — the caller gave up (MCP tool cancellation
+  or Ctrl-C) and the in-flight request was aborted. Nothing is wrong with the
+  media; retry if the result is still needed.
 
 ## GEMINI_PROCESSING_FAILED
 

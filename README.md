@@ -254,8 +254,8 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 | `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                |
 | `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for sampling and extraction (scene capped at 200); `0` keeps only the 500-frame hard cap |
 | `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                            |
-| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Gemini request timeout                                                                                |
-| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Upload → `ACTIVE` timeout                                                                             |
+| `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation                             |
+| `VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS`   | `600000`             | Budget for uploading the media and waiting for `ACTIVE`; the clock starts before the upload           |
 | `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval                                                                           |
 | `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts                                                                |
 | `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts                                                                    |

@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai'
 import type { Config } from '../config.js'
 import { requireGeminiApiKey } from '../config.js'
+import { isAbortError, runWithBounds } from '../utils/abort.js'
 import { VideoAnalyzerError } from '../utils/errors.js'
 import type { Logger } from '../utils/logger.js'
 
@@ -24,16 +25,43 @@ export type GeminiPart =
   | { kind: 'file'; fileUri: string; mimeType: string }
   | { kind: 'inlineImage'; data: string; mimeType: string }
 
+/** Cancellation and deadline applied to a single Gemini network call. */
+export interface GeminiRequestOptions {
+  /** Aborts the call when the caller gives up. */
+  signal?: AbortSignal
+  /** Upper bound for this call, in milliseconds. */
+  timeoutMs?: number
+}
+
 export interface GeminiApi {
-  uploadFile(params: { path: string; mimeType?: string }): Promise<GeminiFileHandle>
-  getFile(name: string): Promise<GeminiFileHandle>
-  generateContent(params: {
-    model: string
-    parts: GeminiPart[]
-    systemInstruction?: string
-    temperature?: number
-    signal?: AbortSignal
-  }): Promise<string>
+  uploadFile(
+    params: { path: string; mimeType?: string } & GeminiRequestOptions,
+  ): Promise<GeminiFileHandle>
+  getFile(name: string, options?: GeminiRequestOptions): Promise<GeminiFileHandle>
+  generateContent(
+    params: {
+      model: string
+      parts: GeminiPart[]
+      systemInstruction?: string
+      temperature?: number
+    } & GeminiRequestOptions,
+  ): Promise<string>
+}
+
+/**
+ * Translate request bounds into SDK config so the underlying HTTP call is
+ * cancelled and timed out instead of merely being abandoned by the caller.
+ */
+function sdkRequestConfig(options: GeminiRequestOptions): {
+  abortSignal?: AbortSignal
+  httpOptions?: { timeout: number }
+} {
+  return {
+    ...(options.signal ? { abortSignal: options.signal } : {}),
+    ...(options.timeoutMs !== undefined && options.timeoutMs > 0
+      ? { httpOptions: { timeout: options.timeoutMs } }
+      : {}),
+  }
 }
 
 function normalizeHandle(file: {
@@ -60,26 +88,37 @@ export class GoogleGenAiApi implements GeminiApi {
     this.client = new GoogleGenAI({ apiKey })
   }
 
-  async uploadFile(params: { path: string; mimeType?: string }): Promise<GeminiFileHandle> {
+  async uploadFile(
+    params: { path: string; mimeType?: string } & GeminiRequestOptions,
+  ): Promise<GeminiFileHandle> {
+    const config = {
+      ...(params.mimeType ? { mimeType: params.mimeType } : {}),
+      ...sdkRequestConfig(params),
+    }
     const uploaded = await this.client.files.upload({
       file: params.path,
-      ...(params.mimeType ? { config: { mimeType: params.mimeType } } : {}),
+      ...(Object.keys(config).length > 0 ? { config } : {}),
     })
     return normalizeHandle(uploaded as Parameters<typeof normalizeHandle>[0])
   }
 
-  async getFile(name: string): Promise<GeminiFileHandle> {
-    const file = await this.client.files.get({ name })
+  async getFile(name: string, options: GeminiRequestOptions = {}): Promise<GeminiFileHandle> {
+    const config = sdkRequestConfig(options)
+    const file = await this.client.files.get({
+      name,
+      ...(Object.keys(config).length > 0 ? { config } : {}),
+    })
     return normalizeHandle(file as Parameters<typeof normalizeHandle>[0])
   }
 
-  async generateContent(params: {
-    model: string
-    parts: GeminiPart[]
-    systemInstruction?: string
-    temperature?: number
-    signal?: AbortSignal
-  }): Promise<string> {
+  async generateContent(
+    params: {
+      model: string
+      parts: GeminiPart[]
+      systemInstruction?: string
+      temperature?: number
+    } & GeminiRequestOptions,
+  ): Promise<string> {
     const parts = params.parts.map((part) => {
       if (part.kind === 'text') return { text: part.text }
       if (part.kind === 'file') {
@@ -88,17 +127,16 @@ export class GoogleGenAiApi implements GeminiApi {
       return { inlineData: { data: part.data, mimeType: part.mimeType } }
     })
 
+    const config = {
+      ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      ...sdkRequestConfig(params),
+    }
+
     const response = await this.client.models.generateContent({
       model: params.model,
       contents: [{ role: 'user', parts }],
-      ...(params.systemInstruction || params.temperature !== undefined
-        ? {
-            config: {
-              ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
-              ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-            },
-          }
-        : {}),
+      ...(Object.keys(config).length > 0 ? { config } : {}),
     })
 
     const text = response.text
@@ -149,6 +187,25 @@ export interface EnsureUploadedParams {
 
 const DEFAULT_CACHE_EXPIRY_MS = 47 * 60 * 60 * 1000 // Gemini files live ~48h
 
+/** Raised when a single Gemini network call exceeds its own deadline. */
+function requestTimeout(stage: string, timeoutMs: number): VideoAnalyzerError {
+  return new VideoAnalyzerError(
+    'GEMINI_TIMEOUT',
+    `Gemini did not respond within ${timeoutMs} ms (${stage}).`,
+    {
+      hint: 'Raise VIDEO_ANALYZER_REQUEST_TIMEOUT_MS for slow networks or very large media.',
+      details: { stage, timeoutMs },
+    },
+  )
+}
+
+/** Raised when the caller cancels the operation. */
+function requestCancelled(): VideoAnalyzerError {
+  return new VideoAnalyzerError('GEMINI_TIMEOUT', 'The Gemini request was cancelled.', {
+    hint: 'The caller cancelled the operation before Gemini answered.',
+  })
+}
+
 /**
  * Shared Gemini media pipeline: one upload → poll → reuse implementation used by
  * every Gemini-backed operation.
@@ -184,10 +241,12 @@ export class GeminiMediaService {
   /** Upload once per source file, coalescing concurrent callers. */
   async ensureUploaded(params: EnsureUploadedParams): Promise<GeminiFileHandle> {
     const key = this.cacheKey(params)
+    const signal = params.signal
+    if (signal?.aborted) throw requestCancelled()
 
     const cached = this.cache.get(key)
     if (cached && cached.expiresAtMs > this.now()) {
-      const active = await this.checkActive(cached.handle.name)
+      const active = await this.checkActive(cached.handle.name, signal)
       if (active) {
         params.onProgress?.('Reusing previously uploaded Gemini file.')
         this.touch(key, cached)
@@ -199,7 +258,7 @@ export class GeminiMediaService {
     const existing = this.inFlight.get(key)
     if (existing) {
       params.onProgress?.('Waiting for an in-flight upload of the same file.')
-      return existing
+      return this.waitUnlessCancelled(() => existing, signal)
     }
 
     const promise = this.uploadAndWait(params, key)
@@ -221,11 +280,18 @@ export class GeminiMediaService {
     }
   }
 
-  private async checkActive(name: string): Promise<GeminiFileHandle | null> {
+  private async checkActive(name: string, signal?: AbortSignal): Promise<GeminiFileHandle | null> {
     try {
-      const file = await this.api.getFile(name)
+      const file = await this.request(
+        'file status',
+        signal,
+        this.config.requestTimeoutMs,
+        (requestSignal, timeoutMs) => this.api.getFile(name, { signal: requestSignal, timeoutMs }),
+      )
       return file.state === 'ACTIVE' ? file : null
-    } catch {
+    } catch (error) {
+      // A cancelled caller must not fall through to a fresh upload.
+      if (error instanceof VideoAnalyzerError && signal?.aborted) throw error
       return null
     }
   }
@@ -234,12 +300,23 @@ export class GeminiMediaService {
     params: EnsureUploadedParams,
     key: string,
   ): Promise<GeminiFileHandle> {
+    // The deadline covers the upload itself as well as the wait for ACTIVE, so a
+    // stalled upload cannot outlive the configured processing budget.
+    const deadline = this.now() + this.config.uploadTimeoutMs
+
     params.onProgress?.('Uploading media to Gemini…')
 
     let uploaded: GeminiFileHandle
     try {
-      uploaded = await this.api.uploadFile({ path: params.path, mimeType: params.mimeType })
+      uploaded = await this.request(
+        'upload',
+        params.signal,
+        deadline - this.now(),
+        (signal, timeoutMs) =>
+          this.api.uploadFile({ path: params.path, mimeType: params.mimeType, signal, timeoutMs }),
+      )
     } catch (error) {
+      if (error instanceof VideoAnalyzerError) throw error
       throw new VideoAnalyzerError('GEMINI_UPLOAD_FAILED', 'Gemini rejected the file upload.', {
         hint: 'Check the file size and format limits for your Gemini model and API tier.',
         cause: error,
@@ -253,7 +330,7 @@ export class GeminiMediaService {
       )
     }
 
-    const active = await this.waitForActive(uploaded, params.onProgress)
+    const active = await this.waitForActive(uploaded, deadline, params)
 
     const expiresAtMs = active.expirationTime
       ? Date.parse(active.expirationTime)
@@ -273,34 +350,40 @@ export class GeminiMediaService {
 
   private async waitForActive(
     uploaded: GeminiFileHandle,
-    onProgress?: (message: string) => void,
+    deadline: number,
+    params: Pick<EnsureUploadedParams, 'signal' | 'onProgress'>,
   ): Promise<GeminiFileHandle> {
-    const deadline = this.now() + this.config.uploadTimeoutMs
     let handle = uploaded
     let announced = false
 
     while (handle.state === 'PROCESSING' || handle.state === 'STATE_UNSPECIFIED') {
-      if (this.now() >= deadline) {
-        throw new VideoAnalyzerError(
-          'GEMINI_TIMEOUT',
-          'Gemini did not finish processing the media in time.',
-          {
-            hint: 'Long videos can take several minutes. Raise VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS.',
-            details: { fileName: handle.name, timeoutMs: this.config.uploadTimeoutMs },
-          },
-        )
-      }
-
       if (!announced) {
-        onProgress?.('Waiting for Gemini to process the media…')
+        params.onProgress?.('Waiting for Gemini to process the media…')
         announced = true
       }
 
-      await this.sleep(this.config.pollIntervalMs)
+      const remaining = deadline - this.now()
+      if (remaining <= 0) throw this.processingTimeout(handle.name)
 
+      // Wake up at the poll interval or at the deadline, whichever comes first,
+      // and stop waiting the moment the caller cancels.
+      await this.waitUnlessCancelled(
+        () => this.sleep(Math.min(this.config.pollIntervalMs, remaining)),
+        params.signal,
+      )
+
+      if (this.now() >= deadline) throw this.processingTimeout(handle.name)
+
+      const fileName = handle.name
       try {
-        handle = await this.api.getFile(handle.name)
+        handle = await this.request(
+          'file status',
+          params.signal,
+          deadline - this.now(),
+          (signal, timeoutMs) => this.api.getFile(fileName, { signal, timeoutMs }),
+        )
       } catch (error) {
+        if (error instanceof VideoAnalyzerError) throw error
         throw new VideoAnalyzerError(
           'GEMINI_PROCESSING_FAILED',
           'Could not read the Gemini file status.',
@@ -350,13 +433,20 @@ export class GeminiMediaService {
     signal?: AbortSignal
   }): Promise<string> {
     try {
-      return await this.api.generateContent({
-        model: this.config.geminiModel,
-        parts: params.parts,
-        ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
-        ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
-      })
+      return await this.request(
+        'generation',
+        params.signal,
+        this.config.requestTimeoutMs,
+        (signal, timeoutMs) =>
+          this.api.generateContent({
+            model: this.config.geminiModel,
+            parts: params.parts,
+            ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
+            ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+            signal,
+            timeoutMs,
+          }),
+      )
     } catch (error) {
       if (error instanceof VideoAnalyzerError) throw error
       this.logger.debug(`Gemini request failed: ${String(error)}`)
@@ -365,6 +455,64 @@ export class GeminiMediaService {
         cause: error,
       })
     }
+  }
+
+  /**
+   * Run one Gemini call with its own deadline and the caller's cancellation.
+   *
+   * The bound is both handed to the SDK and enforced here, because a request
+   * that ignores the signal must still fail instead of hanging forever.
+   */
+  private async request<T>(
+    stage: string,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+    run: (signal: AbortSignal, timeoutMs: number) => Promise<T>,
+  ): Promise<T> {
+    const budget = Math.max(1, Math.floor(timeoutMs))
+    const effective = Math.min(this.config.requestTimeoutMs, budget)
+
+    try {
+      return await runWithBounds((requestSignal) => run(requestSignal, effective), {
+        timeoutMs: effective,
+        ...(signal ? { signal } : {}),
+        onTimeout: () => requestTimeout(stage, effective),
+        onCancel: requestCancelled,
+      })
+    } catch (error) {
+      // A client library may surface the abort itself; keep the public error stable.
+      if (isAbortError(error)) {
+        throw signal?.aborted ? requestCancelled() : requestTimeout(stage, effective)
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Await work that has no deadline of its own (a poll interval or a shared
+   * upload) while still honouring the caller's cancellation.
+   */
+  private async waitUnlessCancelled<T>(
+    work: () => Promise<T>,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
+    return runWithBounds(work, {
+      timeoutMs: 0,
+      ...(signal ? { signal } : {}),
+      onTimeout: () => requestTimeout('poll', 0),
+      onCancel: requestCancelled,
+    })
+  }
+
+  private processingTimeout(fileName: string): VideoAnalyzerError {
+    return new VideoAnalyzerError(
+      'GEMINI_TIMEOUT',
+      'Gemini did not finish processing the media in time.',
+      {
+        hint: 'Long videos can take several minutes. Raise VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS.',
+        details: { fileName, timeoutMs: this.config.uploadTimeoutMs },
+      },
+    )
   }
 
   /** Test seam: drop all cached upload references. */

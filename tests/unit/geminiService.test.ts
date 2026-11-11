@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import {
   GeminiMediaService,
@@ -52,6 +52,15 @@ function createService(api: FakeApi, overrides: { now?: () => number } = {}) {
   })
 }
 
+function createServiceWith(api: FakeApi, env: Record<string, string> = {}) {
+  return new GeminiMediaService({
+    config: loadConfig(env),
+    logger: createLogger('silent'),
+    api: api as unknown as GeminiApi,
+    sleep: async () => undefined,
+  })
+}
+
 const uploadParams = {
   path: '/media/demo.mp4',
   mimeType: 'video/mp4',
@@ -66,7 +75,9 @@ describe('GeminiMediaService', () => {
 
     const result = await service.ensureUploaded(uploadParams)
 
-    expect(api.uploadFile).toHaveBeenCalledWith({ path: '/media/demo.mp4', mimeType: 'video/mp4' })
+    expect(api.uploadFile).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/media/demo.mp4', mimeType: 'video/mp4' }),
+    )
     expect(result.state).toBe('ACTIVE')
     expect(result.uri).toContain('files/abc')
   })
@@ -211,5 +222,139 @@ describe('GeminiMediaService', () => {
 
     const call = api.generateContent.mock.calls[0]?.[0] as { model: string }
     expect(call.model).toBe('gemini-test-model')
+  })
+})
+
+describe('GeminiMediaService timeouts and cancellation', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('gives every Gemini call a signal and a deadline', async () => {
+    const api = createFakeApi({ states: ['PROCESSING', 'ACTIVE'] })
+    const service = createServiceWith(api)
+
+    await service.generateWithFile({ ...uploadParams, prompt: 'hi' })
+
+    const upload = api.uploadFile.mock.calls[0]?.[0] as {
+      signal?: AbortSignal
+      timeoutMs?: number
+    }
+    expect(upload.signal).toBeInstanceOf(AbortSignal)
+    expect(upload.timeoutMs).toBeGreaterThan(0)
+
+    const status = api.getFile.mock.calls[0]?.[1] as { signal?: AbortSignal; timeoutMs?: number }
+    expect(status.signal).toBeInstanceOf(AbortSignal)
+    expect(status.timeoutMs).toBeGreaterThan(0)
+
+    const generation = api.generateContent.mock.calls[0]?.[0] as {
+      signal?: AbortSignal
+      timeoutMs?: number
+    }
+    expect(generation.signal).toBeInstanceOf(AbortSignal)
+    expect(generation.timeoutMs).toBe(loadConfig({}).requestTimeoutMs)
+  })
+
+  it('fails a stalled generation once the request timeout elapses', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi()
+    api.generateContent.mockImplementation(() => new Promise<string>(() => undefined))
+    const service = createServiceWith(api, { VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: '30000' })
+
+    const pending = service.generate({ parts: [{ kind: 'text', text: 'hi' }] })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
+
+  it('rejects an in-flight generation as soon as the caller cancels', async () => {
+    const api = createFakeApi()
+    api.generateContent.mockImplementation(() => new Promise<string>(() => undefined))
+    const service = createServiceWith(api)
+    const controller = new AbortController()
+
+    const pending = service.generate({
+      parts: [{ kind: 'text', text: 'hi' }],
+      signal: controller.signal,
+    })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    controller.abort()
+    await assertion
+
+    // The cancellation also reaches the SDK so the HTTP request is torn down.
+    const call = api.generateContent.mock.calls[0]?.[0] as { signal: AbortSignal }
+    expect(call.signal.aborted).toBe(true)
+  })
+
+  it('never calls Gemini when the signal is already aborted', async () => {
+    const api = createFakeApi()
+    const service = createServiceWith(api)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      service.ensureUploaded({ ...uploadParams, signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+    await expect(
+      service.generate({ parts: [{ kind: 'text', text: 'hi' }], signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    expect(api.uploadFile).not.toHaveBeenCalled()
+    expect(api.generateContent).not.toHaveBeenCalled()
+  })
+
+  it('abandons a stalled upload instead of waiting for it', async () => {
+    const api = createFakeApi()
+    api.uploadFile.mockImplementation(() => new Promise<GeminiFileHandle>(() => undefined))
+    const service = createServiceWith(api)
+    const controller = new AbortController()
+
+    const pending = service.ensureUploaded({ ...uploadParams, signal: controller.signal })
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    controller.abort()
+    await assertion
+
+    expect(api.getFile).not.toHaveBeenCalled()
+  })
+
+  it('bounds a stalled status request with the request timeout', async () => {
+    vi.useFakeTimers()
+    const api = createFakeApi({ states: ['PROCESSING'] })
+    api.getFile.mockImplementation(() => new Promise<GeminiFileHandle>(() => undefined))
+    const service = createServiceWith(api, { VIDEO_ANALYZER_REQUEST_TIMEOUT_MS: '5000' })
+
+    const pending = service.ensureUploaded(uploadParams)
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'GEMINI_TIMEOUT' })
+
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await assertion
+  })
+
+  it('counts upload time against the processing deadline', async () => {
+    let clock = 0
+    const api = createFakeApi({ states: ['PROCESSING'] })
+    api.uploadFile.mockImplementation(async () => {
+      clock += 900 // almost the whole budget is already gone before polling starts
+      return handle({ state: 'PROCESSING' })
+    })
+    const service = new GeminiMediaService({
+      config: loadConfig({ VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS: '1000' }),
+      logger: createLogger('silent'),
+      api: api as unknown as GeminiApi,
+      sleep: async () => {
+        clock += 200
+      },
+      now: () => clock,
+    })
+
+    await expect(service.ensureUploaded(uploadParams)).rejects.toMatchObject({
+      code: 'GEMINI_TIMEOUT',
+      details: { timeoutMs: 1000 },
+    })
+    expect(api.getFile).not.toHaveBeenCalled()
   })
 })

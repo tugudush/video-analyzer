@@ -13,7 +13,11 @@ export interface McpToolDescriptor {
   description: string
   inputSchema: z.ZodTypeAny
   readOnly: boolean
-  invoke(args: unknown): Promise<CallToolResult>
+  /**
+   * Run the operation. `signal` carries MCP request cancellation so in-flight
+   * Gemini calls and polling stop when the client gives up.
+   */
+  invoke(args: unknown, options?: { signal?: AbortSignal }): Promise<CallToolResult>
 }
 
 /** Turn a Zod validation failure into an actionable, interface-neutral error. */
@@ -71,7 +75,7 @@ export function loadOperationsForMcp(
     description: operation.description,
     inputSchema: operation.inputSchema,
     readOnly: operation.category === 'analysis',
-    async invoke(args: unknown) {
+    async invoke(args: unknown, options?: { signal?: AbortSignal }) {
       let parsed: unknown
       try {
         parsed = operation.inputSchema.parse(args)
@@ -82,6 +86,7 @@ export function loadOperationsForMcp(
 
       const result = await executeOperation(operation, parsed, config, {
         logger,
+        ...(options?.signal ? { signal: options.signal } : {}),
         ...(onProgress ? { onProgress } : {}),
       })
       return toCallToolResult(result)

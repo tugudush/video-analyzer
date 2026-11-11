@@ -66,9 +66,9 @@ export function createMcpServer(config: Config): McpServerHandle {
           openWorldHint: true,
         },
       },
-      async (args: unknown): Promise<CallToolResult> => {
+      async (args: unknown, extra: { signal: AbortSignal }): Promise<CallToolResult> => {
         try {
-          const result = await tool.invoke(args)
+          const result = await tool.invoke(args, { signal: extra.signal })
           return result satisfies CallToolResult
         } catch (error) {
           const normalized = toVideoAnalyzerError(error)
