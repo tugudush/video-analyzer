@@ -39,13 +39,33 @@ machine.
 
 Cause and fix:
 
-| Message                              | Fix                                                                          |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`)    |
-| Empty file                           | Re-export or re-download the media                                           |
-| Frame extraction on audio-only input | Use `transcribe_video` instead                                               |
-| Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                   |
-| URL did not return media             | Use a direct media URL or a local file; platform page downloads are disabled |
+| Message                              | Fix                                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
+| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`)           |
+| Empty file                           | Re-export or re-download the media                                                  |
+| Frame extraction on audio-only input | Use `transcribe_video` instead                                                      |
+| Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                          |
+| URL did not return media             | Use a direct media URL or a local file; see [Platform page URL](#platform-page-url) |
+
+## Platform page URL
+
+`The URL did not return media.` for a YouTube, Vimeo, or similar page is expected:
+the tool downloads direct media only. Do not retry the same URL or look for a
+setting that turns it on — there is none, and the `YT_DLP_*` variables are inert.
+
+Have the media fetched outside the tool, then analyze the file:
+
+```bash
+yt-dlp -f "bv*[height<=720]+ba/b[height<=720]" --no-playlist -o "clip.%(ext)s" "<page-url>"
+node ./scripts/invoke.mjs get_video_info '{"videoPath":"./clip.mp4"}'
+```
+
+If the user has no downloader, point at the README's "Getting Media from a
+Platform" section — do not install one for them. An `HTTP Error 403` from yt-dlp is
+a downloader problem: update yt-dlp, retry with
+`--extractor-args "youtube:player_client=web_safari,ios,mweb"`, and reach for
+`--cookies cookies.txt` only when the media needs an authenticated session. Those
+cookies are account credentials; do not request them for public media.
 
 ## URL_REJECTED
 

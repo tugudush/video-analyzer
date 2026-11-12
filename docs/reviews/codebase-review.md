@@ -10,10 +10,10 @@ operation returned a correct envelope, and `get_video_info`, `summarize_video`,
 `transcribe_video`, and `extract_frames` all ran against the real Gemini API and
 the real ffmpeg build.
 
-| Finding                                                  | Severity | Status |
-| -------------------------------------------------------- | -------- | ------ |
-| Platform URLs have no documented workflow for the caller | P3       | Open   |
-| `summarize_video` timestamps carry no envelope warning   | P3       | Open   |
+| Finding                                                  | Severity | Status      |
+| -------------------------------------------------------- | -------- | ----------- |
+| Platform URLs have no documented workflow for the caller | P3       | ✅ Resolved |
+| `summarize_video` timestamps carry no envelope warning   | P3       | Open        |
 
 ### P3 — Platform URLs have no documented workflow for the caller
 
@@ -47,6 +47,16 @@ Two operational details are worth capturing wherever that guidance lands:
   succeeded on the first attempt.
 - The 360p `18` stream is 21.1 MB for 7 minutes, so a typical link costs a
   multi-second download before analysis even starts.
+
+**Resolved on 2026-11-12.** [README](../../README.md#getting-media-from-a-platform)
+now carries a "Getting Media from a Platform" section: install commands for WinGet,
+Scoop, Homebrew, apt, pipx, and pip, a fetch-then-analyze example, and the 403
+ladder (player client, cache, cookies). [SKILL.md](../../skills/video-analyzer/SKILL.md)
+routes a platform URL to that workflow instead of leaving the agent to improvise,
+[troubleshooting.md](../../skills/video-analyzer/references/troubleshooting.md#platform-page-url)
+carries the same path under `UNSUPPORTED_INPUT`, and
+[configuration.md](../../skills/video-analyzer/references/configuration.md) states
+that the legacy `YT_DLP_*` variables stay inert, so no cookie setting exists here.
 
 ### P3 — `summarize_video` timestamps carry no envelope warning
 

@@ -121,7 +121,7 @@ deadline would then fire before the request starts.
 | `FFMPEG_PATH`  | `ffmpeg`  | ffmpeg executable. Environment only — a `.env` file cannot set it.  |
 | `FFPROBE_PATH` | `ffprobe` | ffprobe executable. Environment only — a `.env` file cannot set it. |
 
-The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled.
+The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled. There is no setting that enables platform page downloads, and no cookie setting: a platform page is fetched outside the tool, so its 403 workarounds (`--cookies`, `--extractor-args`) belong to that command line. See the repository README, "Getting Media from a Platform".
 
 ## Network
 
