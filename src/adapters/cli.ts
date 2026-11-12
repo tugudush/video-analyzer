@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import type { Readable } from 'node:stream'
 import { loadConfig, type Config } from '../config.js'
 import { listOperations, requireOperation } from '../operations/registry.js'
@@ -8,6 +8,7 @@ import { createLogger, type Logger } from '../utils/logger.js'
 import {
   toErrorEnvelope,
   toVideoAnalyzerError,
+  VideoAnalyzerError,
   inputNotFound,
   invalidInput,
 } from '../utils/errors.js'
@@ -32,14 +33,32 @@ export interface CliIO {
   onCancel?(handler: () => void): () => void
 }
 
+/** Largest JSON payload accepted from stdin, `--input`, or `--input-file`. */
+export const MAX_INPUT_BYTES = 1024 * 1024
+
+function inputTooLarge(source: string): Error {
+  return invalidInput(`The input payload exceeds the ${MAX_INPUT_BYTES}-byte limit.`, {
+    hint: 'Pass a smaller JSON payload; operation arguments are small by design.',
+    details: { source, maxBytes: MAX_INPUT_BYTES },
+  })
+}
+
 /** Read a piped text payload through EOF; silence is not an end-of-input marker. */
-export async function readStdinToEnd(stream: Readable): Promise<string | undefined> {
+export async function readStdinToEnd(
+  stream: Readable,
+  maxBytes = MAX_INPUT_BYTES,
+): Promise<string | undefined> {
   const chunks: Buffer[] = []
+  let totalBytes = 0
   try {
     for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      totalBytes += buffer.byteLength
+      if (totalBytes > maxBytes) throw inputTooLarge('stdin')
+      chunks.push(buffer)
     }
   } catch (error) {
+    if (error instanceof VideoAnalyzerError) throw error
     throw inputNotFound('Could not read standard input.', { cause: error })
   }
   const text = Buffer.concat(chunks).toString('utf8')
@@ -95,12 +114,16 @@ Environment:
   VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS Allow private/loopback direct media hosts
   VIDEO_ANALYZER_LOG_LEVEL           silent|error|warn|info|debug
   FFMPEG_PATH / FFPROBE_PATH
+  YT_DLP_PATH                        yt-dlp executable (platform page URLs)
+  YT_DLP_MAX_RESOLUTION              Highest downloaded video height (default 720)
+  YT_DLP_COOKIES_FILE                Netscape cookies file for authenticated media
+  YT_DLP_IMPERSONATE                 Browser client passed to yt-dlp --impersonate
 
   A .env file in the working directory may only set GEMINI_API_KEY, GEMINI_MODEL,
   VIDEO_ANALYZER_MAX_FRAMES, VIDEO_ANALYZER_DOWNLOAD_MAX_MB, the three timeout
   settings, VIDEO_ANALYZER_OUTPUT_DIR, and VIDEO_ANALYZER_LOG_LEVEL. It cannot set
   PATH, FFMPEG_PATH/FFPROBE_PATH, VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS, or
-  VIDEO_ANALYZER_CLI_PATH.
+  VIDEO_ANALYZER_CLI_PATH. The YT_DLP_* settings are read from the environment only.
 `
 
 interface ParsedArgs {
@@ -146,7 +169,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
       parsed.inputFile = value
     } else if (arg.startsWith('--input-file=')) {
       parsed.inputFile = arg.slice('--input-file='.length)
-    } else if (arg !== undefined) {
+    } else if (arg.startsWith('-')) {
+      throw invalidInput(`Unknown option: ${arg}`, {
+        hint: 'Supported options: --input, --input-file, --pretty, --version, --help.',
+      })
+    } else {
       parsed.rest.push(arg)
     }
   }
@@ -154,26 +181,45 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return parsed
 }
 
+function inputFileReadError(filePath: string, error: unknown): Error {
+  const code = (error as NodeJS.ErrnoException).code
+  const hint =
+    'Check the path, or pass the arguments with --input or on stdin. Run "video-analyzer help <operation>" for the schema.'
+  if (code === 'ENOENT') {
+    return inputNotFound(`Input file not found: ${filePath}`, { hint, cause: error })
+  }
+  return inputNotFound(`Could not read the input file: ${filePath}`, {
+    hint,
+    ...(code ? { details: { code } } : {}),
+    cause: error,
+  })
+}
+
+/** Read the payload file, refusing an oversized one before loading it. */
+async function readInputFile(filePath: string): Promise<string> {
+  let info
+  try {
+    info = await stat(filePath)
+  } catch (error) {
+    throw inputFileReadError(filePath, error)
+  }
+  if (info.size > MAX_INPUT_BYTES) throw inputTooLarge(filePath)
+  try {
+    return await readFile(filePath, 'utf8')
+  } catch (error) {
+    throw inputFileReadError(filePath, error)
+  }
+}
+
 async function resolveInputJson(parsed: ParsedArgs, io: CliIO): Promise<unknown> {
   let raw: string | undefined
+  let source = 'stdin'
 
   if (parsed.inputFile) {
-    try {
-      raw = await readFile(parsed.inputFile, 'utf8')
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      const hint =
-        'Check the path, or pass the arguments with --input or on stdin. Run "video-analyzer help <operation>" for the schema.'
-      if (code === 'ENOENT') {
-        throw inputNotFound(`Input file not found: ${parsed.inputFile}`, { hint, cause: error })
-      }
-      throw inputNotFound(`Could not read the input file: ${parsed.inputFile}`, {
-        hint,
-        ...(code ? { details: { code } } : {}),
-        cause: error,
-      })
-    }
+    source = parsed.inputFile
+    raw = await readInputFile(parsed.inputFile)
   } else if (parsed.input !== undefined) {
+    source = '--input'
     raw = parsed.input
   } else if (io.readStdin) {
     raw = await io.readStdin()
@@ -184,6 +230,8 @@ async function resolveInputJson(parsed: ParsedArgs, io: CliIO): Promise<unknown>
       hint: `Pass --input '{"..."}' , --input-file <path>, or JSON on stdin. Run "video-analyzer help ${parsed.command}" for the schema.`,
     })
   }
+
+  if (Buffer.byteLength(raw, 'utf8') > MAX_INPUT_BYTES) throw inputTooLarge(source)
 
   try {
     return JSON.parse(raw)

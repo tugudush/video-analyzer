@@ -1,6 +1,7 @@
 import { ZodError, type z } from 'zod'
 import type { Config } from '../config.js'
 import type { OperationContext, OperationResult } from '../operations/types.js'
+import type { GeminiMediaService } from '../services/gemini.js'
 import { invalidInput } from '../utils/errors.js'
 import { createLogger, type Logger } from '../utils/logger.js'
 
@@ -8,6 +9,12 @@ export interface ExecuteOptions {
   signal?: AbortSignal
   onProgress?: (message: string) => void
   logger?: Logger
+  /**
+   * Test and embedding seam: use this service instead of the process-wide one.
+   * Kept here so callers do not have to bypass schema validation and logging by
+   * invoking `operation.run` directly.
+   */
+  geminiService?: GeminiMediaService
 }
 
 const defaultLoggers = new WeakMap<Config, Logger>()
@@ -65,6 +72,7 @@ export async function executeOperation<S extends z.ZodTypeAny>(
     logger,
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    ...(options.geminiService ? { geminiService: options.geminiService } : {}),
   }
 
   return operation.run(parseOperationInput(operation.inputSchema, input), ctx)

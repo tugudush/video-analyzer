@@ -15,8 +15,14 @@ backslashes. Add `--pretty` for readable JSON output.
 - an absolute or relative local path
 - a `file://` URI
 - a direct `http(s)` media URL
+- a platform page URL (YouTube, Vimeo, …)
 
-Platform page downloads and yt-dlp fallback are disabled; use a local file or a direct media URL.
+A page URL returns a document rather than media, so it is downloaded with `yt-dlp`
+automatically. `yt-dlp` must be installed for those inputs; without it the call
+fails with `DEPENDENCY_MISSING` and an install hint. Downloads are capped by
+`YT_DLP_MAX_RESOLUTION` and `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`, and use
+`YT_DLP_COOKIES_FILE` when the site requires a signed-in session. See
+[configuration.md](./configuration.md#platform-downloads-yt-dlp).
 
 ## Response Envelope
 

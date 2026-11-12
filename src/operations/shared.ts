@@ -179,6 +179,13 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
+/**
+ * Warning attached by every operation that reports model-estimated times, so a
+ * caller cannot present an estimate as a frame-accurate position.
+ */
+export const TIMESTAMP_ESTIMATE_WARNING =
+  'Timestamps are Gemini estimates derived from its internal sampling, not frame-accurate seek positions. Verify with extract_frames before cutting.'
+
 /** Shared analyst preamble so behaviour is consistent across AI operations. */
 export const ANALYST_SYSTEM_INSTRUCTION = [
   'You are a precise media analyst working from a video file that includes its audio track.',

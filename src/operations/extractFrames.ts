@@ -135,11 +135,38 @@ async function loadFrameSet(dir: string): Promise<FrameSet> {
   return parsed.data
 }
 
+/**
+ * Page summary.
+ *
+ * Paging a saved frame set performs no extraction, so it must not claim to have
+ * produced the frames it only read back from disk.
+ */
+function pageSummary(
+  frameSet: FrameSet,
+  outDir: string,
+  offset: number,
+  pageLength: number,
+  fromExtraction: boolean,
+): string {
+  const { mode, files } = frameSet
+  if (files.length === 0) {
+    return 'No frames were extracted. The video may be shorter than the sampling interval, or no scene changes exceeded the threshold.'
+  }
+  if (pageLength === 0) {
+    return `No frames on this page: offset ${offset} is past the ${files.length} frame(s) in this frame set (mode: ${mode}).`
+  }
+  if (!fromExtraction) {
+    return `Returned frames ${offset + 1}-${offset + pageLength} of ${files.length} from ${outDir} (mode: ${mode}).`
+  }
+  return `Extracted ${pageLength} frame(s) (mode: ${mode}) into ${outDir}.`
+}
+
 async function renderFramePage(
   frameSet: FrameSet,
   outDir: string,
   offset: number,
   maxImages: number,
+  fromExtraction: boolean,
 ): Promise<OperationResult> {
   const { mode, files, timestamps, truncated, intervalStats } = frameSet
   const warnings = [...frameSet.warnings]
@@ -182,12 +209,7 @@ async function renderFramePage(
   }))
 
   return {
-    summary:
-      files.length === 0
-        ? 'No frames were extracted. The video may be shorter than the sampling interval, or no scene changes exceeded the threshold.'
-        : page.length === 0
-          ? `No frames on this page: offset ${offset} is past the ${files.length} frame(s) in this frame set (mode: ${mode}).`
-          : `Extracted ${page.length} frame(s) (mode: ${mode}) into ${outDir}.`,
+    summary: pageSummary(frameSet, outDir, offset, page.length, fromExtraction),
     data: {
       mode,
       outputDir: outDir,
@@ -258,7 +280,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
         })
       }
       const outDir = path.resolve(input.frameSetDir)
-      return renderFramePage(await loadFrameSet(outDir), outDir, offset, maxImages)
+      return renderFramePage(await loadFrameSet(outDir), outDir, offset, maxImages, false)
     }
     if (!input.videoPath) {
       throw invalidInput('A new extraction requires videoPath.', {
@@ -408,7 +430,7 @@ export const extractFramesOperation: Operation<typeof extractFramesInput> = {
           cause: error,
         })
       }
-      return await renderFramePage(frameSet, outDir, offset, maxImages)
+      return await renderFramePage(frameSet, outDir, offset, maxImages, true)
     } catch (error) {
       // A failed extraction must not leave a half-populated folder behind, so the
       // caller can trust that reported output directories are complete.

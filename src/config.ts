@@ -28,6 +28,17 @@ export interface Config {
   pollIntervalMs: number
   ffmpegPath: string
   ffprobePath: string
+  /**
+   * Path to the `yt-dlp` executable used for platform page URLs. Undefined
+   * means "resolve `yt-dlp` from `PATH`".
+   */
+  ytdlpPath: string | undefined
+  /** Highest video height yt-dlp may download. Defaults to 720p. */
+  ytdlpMaxResolution: number
+  /** Netscape-format cookies file passed to yt-dlp for authenticated media. */
+  ytdlpCookiesFile: string | undefined
+  /** Browser/client token passed to `yt-dlp --impersonate`. */
+  ytdlpImpersonate: string | undefined
   allowPrivateHosts: boolean
   logLevel: LogLevel
   /** Directory for files the caller asked us to keep. Defaults to the cwd. */
@@ -40,6 +51,7 @@ const DEFAULTS = {
   requestTimeoutMs: 5 * 60 * 1000,
   uploadTimeoutMs: 10 * 60 * 1000,
   pollIntervalMs: 2_000,
+  ytdlpMaxResolution: 720,
 } as const
 
 function readInt(
@@ -128,7 +140,14 @@ export interface LoadConfigOptions {
   dotenvFile?: string | null
 }
 
-/** Parse configuration from an environment object (defaults to `process.env`). */
+/**
+ * Parse configuration from an environment object (defaults to `process.env`).
+ *
+ * When the real process environment is used, a `.env` file in the working
+ * directory is applied *into* it (real variables win), so `process.env` and the
+ * parsed `Config` stay in sync. Pass an explicit environment object to read
+ * configuration without that side effect; library embedders should prefer it.
+ */
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: LoadConfigOptions = {},
@@ -137,9 +156,15 @@ export function loadConfig(
     applyDotEnv(env, options.dotenvFile ?? path.join(process.cwd(), '.env'))
   }
 
-  // `YT_DLP_*` settings are deliberately unread: platform page downloads are
-  // disabled, so the documented legacy variables stay harmless no-ops instead of
-  // being parsed into a configuration surface nothing consumes.
+  // The `YT_DLP_*` settings are read from the real environment only: they name
+  // an executable, a credential file, or a network identity, and a repository's
+  // `.env` must not be able to choose any of those (see DOTENV_KEYS).
+  const ytdlpImpersonate = readString(env, 'YT_DLP_IMPERSONATE')
+  if (ytdlpImpersonate !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.:+-]*$/.test(ytdlpImpersonate)) {
+    throw invalidInput('YT_DLP_IMPERSONATE must look like a browser token.', {
+      hint: 'Use a client such as chrome, firefox, or safari, optionally with a version or OS (chrome-136:macos-14).',
+    })
+  }
 
   const logLevelRaw = env['VIDEO_ANALYZER_LOG_LEVEL']?.trim()
   const logLevel: LogLevel =
@@ -175,6 +200,13 @@ export function loadConfig(
     }),
     ffmpegPath: readString(env, 'FFMPEG_PATH') ?? 'ffmpeg',
     ffprobePath: readString(env, 'FFPROBE_PATH') ?? 'ffprobe',
+    ytdlpPath: readString(env, 'YT_DLP_PATH'),
+    ytdlpMaxResolution: readInt(env, 'YT_DLP_MAX_RESOLUTION', DEFAULTS.ytdlpMaxResolution, {
+      min: 144,
+      max: 4320,
+    }),
+    ytdlpCookiesFile: readString(env, 'YT_DLP_COOKIES_FILE'),
+    ytdlpImpersonate,
     allowPrivateHosts: readBool(env, 'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS', false),
     logLevel,
     outputDir: readString(env, 'VIDEO_ANALYZER_OUTPUT_DIR'),

@@ -29,6 +29,12 @@ export FFMPEG_PATH=/usr/bin/ffmpeg
 export FFPROBE_PATH=/usr/bin/ffprobe
 ```
 
+`yt-dlp is required for platform page URLs but was not found on PATH.` — the input
+was a page URL (YouTube, Vimeo, …), which is downloaded with `yt-dlp`. Install it
+(`winget install --id yt-dlp.yt-dlp`, `brew install yt-dlp`, `pipx install yt-dlp`)
+or set `YT_DLP_PATH` to the executable. Local files and direct media URLs never
+need it.
+
 ## INPUT_NOT_FOUND
 
 The path does not exist from the current working directory. Confirm with the user
@@ -39,13 +45,37 @@ machine.
 
 Cause and fix:
 
-| Message                              | Fix                                                                          |
-| ------------------------------------ | ---------------------------------------------------------------------------- |
-| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`)    |
-| Empty file                           | Re-export or re-download the media                                           |
-| Frame extraction on audio-only input | Use `transcribe_video` instead                                               |
-| Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                   |
-| URL did not return media             | Use a direct media URL or a local file; platform page downloads are disabled |
+| Message                              | Fix                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------- |
+| Unknown media type                   | Use a common container (`mp4`, `mov`, `webm`, `mkv`, `mp3`, `m4a`, `wav`) |
+| Empty file                           | Re-export or re-download the media                                        |
+| Frame extraction on audio-only input | Use `transcribe_video` instead                                            |
+| Downloaded content type unknown      | Use a URL path ending in a media extension or a local file                |
+| URL did not return media             | Use a direct media URL, a local file, or a page URL yt-dlp supports       |
+
+## Platform download failed
+
+A page URL (YouTube, Vimeo, …) is downloaded with `yt-dlp` automatically. Failures
+come from that binary or from the platform, so the fix is on the `yt-dlp` side.
+
+| Message                                       | Fix                                                                                     |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `yt-dlp is required ... not found on PATH`    | Install yt-dlp, or set `YT_DLP_PATH`.                                                   |
+| `The platform requires a signed-in session`   | Set `YT_DLP_COOKIES_FILE` to a Netscape cookies file exported from a signed-in browser. |
+| `HTTP 403` / `The platform refused the media` | Set `YT_DLP_IMPERSONATE=chrome`, then cookies if it still fails.                        |
+| `No stream matches the requested format`      | Raise `YT_DLP_MAX_RESOLUTION` (default 720).                                            |
+| `yt-dlp cannot impersonate that browser`      | Install `yt-dlp[default]`, or unset `YT_DLP_IMPERSONATE`.                               |
+
+The tool already retries YouTube with a second player client, which clears most
+403s without configuration. All four `YT_DLP_*` settings are environment-only; a
+`.env` file cannot set them. Never ask a user for cookies for public media, and
+treat the cookies file as an account credential.
+
+To supply cookies: `--cookies-from-browser firefox` reads the browser profile
+directly (Chrome 127+ on Windows usually fails with `Failed to decrypt`), or the
+user exports a Netscape-format file and you pass `--cookies cookies.txt`. Test with
+`yt-dlp --cookies cookies.txt --simulate -F "<page-url>"` before a real download.
+The repository README's "Supplying cookies" subsection has the export steps.
 
 ## URL_REJECTED
 

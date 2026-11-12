@@ -22,7 +22,7 @@ const SERVER_INSTRUCTIONS = [
   '- Technical details (duration, codec, resolution) → get_video_info',
   '- Still images at times or scene changes → extract_frames',
   '',
-  'Inputs may be local paths, file:// URIs, or direct http(s) media URLs. Platform page downloads are disabled.',
+  'Inputs may be local paths, file:// URIs, direct http(s) media URLs, or platform page URLs (YouTube, Vimeo, …); page URLs are downloaded with yt-dlp.',
   'Local operations (get_video_info, extract_frames) work without GEMINI_API_KEY.',
 ].join('\n')
 

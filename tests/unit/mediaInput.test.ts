@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,9 +28,25 @@ function withCredentials(rawUrl: string): string {
   return url.href
 }
 
+/**
+ * Emulate a successful yt-dlp run: write the file its `--output` template names
+ * and report success through the callback `promisify` is waiting on.
+ */
+function emulateYtDlpDownload(): void {
+  mocks.execFile.mockImplementation(
+    (_binary: string, args: string[], _options: unknown, callback?: unknown) => {
+      const outputIndex = args.indexOf('--output')
+      const template = outputIndex >= 0 ? args[outputIndex + 1] : undefined
+      if (template) writeFileSync(template.replace('%(ext)s', 'mp4'), 'platform media')
+      if (typeof callback === 'function') callback(null, { stdout: '', stderr: '' })
+    },
+  )
+}
+
 describe('remote media input policy', () => {
-  // The legacy `YT_DLP_PATH` setting is ignored — it is no longer parsed at all —
-  // so setting it here proves a configured downloader never changes the decision.
+  // `YT_DLP_PATH` points at a path that does not exist, so a platform page can
+  // only resolve here because the spawn is mocked: the setting is what the
+  // downloader uses, not a toggle for whether it runs.
   const config = loadConfig({ YT_DLP_PATH: '/configured/downloader' })
   const privateConfig = loadConfig({
     YT_DLP_PATH: '/configured/downloader',
@@ -43,20 +60,29 @@ describe('remote media input policy', () => {
     mocks.execFile.mockReset()
     fetchMock.mockReset()
     mocks.lookup.mockResolvedValue([{ address: '8.8.8.8', family: 4 }])
+    emulateYtDlpDownload()
   })
 
-  it('does not send a known platform page to the external downloader', async () => {
+  it('extracts a platform page with the downloader instead of rejecting it', async () => {
     fetchMock.mockResolvedValue(
       new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
     )
 
-    await expect(
-      resolveMediaInput('https://www.youtube.com/watch?v=example', config),
-    ).rejects.toMatchObject({
-      code: 'UNSUPPORTED_INPUT',
-    })
-    expect(fetchMock).toHaveBeenCalledOnce()
-    expect(mocks.execFile).not.toHaveBeenCalled()
+    const media = await resolveMediaInput('https://www.youtube.com/watch?v=example', config)
+    try {
+      expect(media.source).toBe('direct')
+      expect(media.mimeType).toBe('video/mp4')
+      expect(media.cacheKey).toMatch(/^platform:video\/mp4:[0-9a-f]{64}$/)
+      expect(await readFile(media.path, 'utf8')).toBe('platform media')
+    } finally {
+      await media.cleanup()
+    }
+
+    expect(mocks.execFile).toHaveBeenCalledOnce()
+    const args = mocks.execFile.mock.calls[0]?.[1] as string[]
+    expect(args).toContain('--')
+    expect(args.at(-1)).toBe('https://www.youtube.com/watch?v=example')
+    expect(mocks.execFile.mock.calls[0]?.[0]).toBe('/configured/downloader')
   })
 
   it.each([config, privateConfig])(
@@ -126,18 +152,22 @@ describe('remote media input policy', () => {
   )
 
   it.each([config, privateConfig])(
-    'does not fall back to the downloader after an HTML redirect',
+    'extracts the redirect target with the downloader when it is a page',
     async (settings) => {
       fetchMock
         .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: '/page' } }))
         .mockResolvedValueOnce(
           new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
         )
-      await expect(resolveMediaInput('https://example.com/start', settings)).rejects.toMatchObject({
-        code: 'UNSUPPORTED_INPUT',
-      })
+      const media = await resolveMediaInput('https://example.com/start', settings)
+      try {
+        expect(media.mimeType).toBe('video/mp4')
+      } finally {
+        await media.cleanup()
+      }
       expect(fetchMock).toHaveBeenCalledTimes(2)
-      expect(mocks.execFile).not.toHaveBeenCalled()
+      expect(mocks.execFile).toHaveBeenCalledOnce()
+      expect(mocks.execFile.mock.calls[0]?.[1]).toContain('https://example.com/page')
     },
   )
 
@@ -241,7 +271,7 @@ describe('remote media input policy', () => {
     expect(mocks.lookup).not.toHaveBeenCalled()
   })
 
-  it('permits a private redirect only with opt-in, without enabling HTML fallback', async () => {
+  it('permits a private redirect only with opt-in, and still extracts it', async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/page' } }),
@@ -249,13 +279,14 @@ describe('remote media input policy', () => {
       .mockResolvedValueOnce(
         new Response('<html></html>', { headers: { 'content-type': 'text/html' } }),
       )
-    await expect(
-      resolveMediaInput('https://youtube.com/watch?v=example', privateConfig),
-    ).rejects.toMatchObject({
-      code: 'UNSUPPORTED_INPUT',
-    })
+    const media = await resolveMediaInput('https://youtube.com/watch?v=example', privateConfig)
+    try {
+      expect(media.mimeType).toBe('video/mp4')
+    } finally {
+      await media.cleanup()
+    }
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(mocks.execFile).not.toHaveBeenCalled()
+    expect(mocks.execFile.mock.calls[0]?.[1]).toContain('http://127.0.0.1/page')
   })
 
   it('rejects a remote image that omits its Content-Type', async () => {
@@ -264,6 +295,18 @@ describe('remote media input policy', () => {
 
     await expect(resolveMediaInput('https://example.com/cover.jpg', config)).rejects.toMatchObject({
       code: 'UNSUPPORTED_INPUT',
+    })
+    expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('does not hand a JSON endpoint to the downloader', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } }),
+    )
+
+    await expect(resolveMediaInput('https://example.com/api', config)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_INPUT',
+      message: expect.stringMatching(/did not return media/),
     })
     expect(mocks.execFile).not.toHaveBeenCalled()
   })
