@@ -23,6 +23,8 @@ describe('loadConfig', () => {
     expect(config.pollIntervalMs).toBe(2_000)
     expect(config.ffmpegPath).toBe('ffmpeg')
     expect(config.ffprobePath).toBe('ffprobe')
+    expect(config.ytdlpPath).toBeUndefined()
+    expect(config.ytdlpMaxResolution).toBe(720)
     expect(config.allowPrivateHosts).toBe(false)
     expect(config.logLevel).toBe('warn')
     expect(config.outputDir).toBeUndefined()
@@ -50,10 +52,36 @@ describe('loadConfig', () => {
     expect(config.outputDir).toBe('/tmp/out')
   })
 
-  it('ignores the legacy yt-dlp settings', () => {
-    const config = loadConfig({ YT_DLP_PATH: '/opt/yt-dlp', YT_DLP_MAX_RESOLUTION: '720' })
-    expect(config).not.toHaveProperty('ytDlpPath')
-    expect(config).not.toHaveProperty('ytDlpMaxResolution')
+  it('reads the platform download settings', () => {
+    const config = loadConfig({
+      YT_DLP_PATH: '/opt/yt-dlp',
+      YT_DLP_MAX_RESOLUTION: '480',
+      YT_DLP_COOKIES_FILE: '/secrets/cookies.txt',
+      YT_DLP_IMPERSONATE: 'chrome-136',
+    })
+    expect(config.ytdlpPath).toBe('/opt/yt-dlp')
+    expect(config.ytdlpMaxResolution).toBe(480)
+    expect(config.ytdlpCookiesFile).toBe('/secrets/cookies.txt')
+    expect(config.ytdlpImpersonate).toBe('chrome-136')
+  })
+
+  it('defaults platform downloads to 720p with yt-dlp from PATH', () => {
+    const config = loadConfig({})
+    expect(config.ytdlpPath).toBeUndefined()
+    expect(config.ytdlpMaxResolution).toBe(720)
+    expect(config.ytdlpCookiesFile).toBeUndefined()
+    expect(config.ytdlpImpersonate).toBeUndefined()
+  })
+
+  it('rejects an unusable platform resolution', () => {
+    expect(() => loadConfig({ YT_DLP_MAX_RESOLUTION: '80' })).toThrowError(/YT_DLP_MAX_RESOLUTION/)
+    expect(() => loadConfig({ YT_DLP_MAX_RESOLUTION: 'high' })).toThrowError(
+      /YT_DLP_MAX_RESOLUTION/,
+    )
+  })
+
+  it('rejects an impersonation token that could be read as a flag', () => {
+    expect(() => loadConfig({ YT_DLP_IMPERSONATE: '--exec' })).toThrowError(/YT_DLP_IMPERSONATE/)
   })
 
   it('treats blank strings as unset', () => {
@@ -167,6 +195,9 @@ describe('.env trust boundary', () => {
     'FFPROBE_PATH',
     'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS',
     'VIDEO_ANALYZER_CLI_PATH',
+    'YT_DLP_PATH',
+    'YT_DLP_COOKIES_FILE',
+    'YT_DLP_IMPERSONATE',
   ])('ignores %s from the file', async (name) => {
     const file = path.join(dir, '.env')
     await writeFile(file, `${name}=/tmp/attacker-controlled\n`, 'utf8')
@@ -182,6 +213,10 @@ describe('.env trust boundary', () => {
       'FFMPEG_PATH',
       'FFPROBE_PATH',
       'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS',
+      'YT_DLP_PATH',
+      'YT_DLP_COOKIES_FILE',
+      'YT_DLP_IMPERSONATE',
+      'YT_DLP_MAX_RESOLUTION',
     ]) {
       expect(DOTENV_KEYS as readonly string[]).not.toContain(forbidden)
     }

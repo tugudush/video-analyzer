@@ -20,7 +20,7 @@ Neither interface depends on the other. Install one, or both.
 | `get_video_info`   | Duration, resolution, frame rate, codecs, size            | no           |
 | `extract_frames`   | Frames by count, interval, timestamps, or scene changes   | no           |
 
-Inputs can be local paths, `file://` URIs, or direct `http(s)` media URLs. Platform page downloads and yt-dlp fallback are disabled because their network destinations cannot be validated; use a local file or direct media URL instead. A platform page (YouTube, Vimeo, …) is therefore fetched by you, not by the tool — see [Getting Media from a Platform](#getting-media-from-a-platform).
+Inputs can be local paths, `file://` URIs, direct `http(s)` media URLs, or platform page URLs such as YouTube and Vimeo. A page URL is handed to [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), which the tool runs automatically and which must be installed for those inputs — see [Getting Media from a Platform](#getting-media-from-a-platform).
 
 Deliberately **not** included: text-to-speech, image/video/music generation, multi-provider routing, and licensing or paid tiers.
 
@@ -30,7 +30,7 @@ Deliberately **not** included: text-to-speech, image/video/music generation, mul
 - FFmpeg (includes `ffprobe`) on `PATH`, or `FFMPEG_PATH` / `FFPROBE_PATH`
 - `GEMINI_API_KEY` — only for AI operations ([get a key](https://aistudio.google.com/app/apikey))
 
-`yt-dlp` is optional and unrelated to installation: the tool never runs it, and it is only useful if you want to fetch a video from a platform page yourself. See [Getting Media from a Platform](#getting-media-from-a-platform).
+`yt-dlp` is required only for platform page URLs (YouTube, Vimeo, …), which the tool downloads for you. Local files and direct media URLs never involve it. Install steps and the `YT_DLP_*` settings are in [Getting Media from a Platform](#getting-media-from-a-platform).
 
 ## Install
 
@@ -259,17 +259,36 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 
 ## Getting Media from a Platform
 
-A YouTube, Vimeo, or similar **page** URL is not a media URL: it returns HTML, so
-the tool rejects it with `UNSUPPORTED_INPUT` ("The URL did not return media.").
-Resolving a platform page means scraping it, and a destination chosen by scraped
-markup cannot be validated against SSRF, so platform extraction stays outside the
-tool. Fetch the media yourself, then analyze the local file — every operation and
-both interfaces accept it.
+A YouTube, Vimeo, or similar **page** URL is not a media URL: it returns HTML.
+When a remote URL answers with a document, the tool hands the final URL to
+[`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and analyzes what it downloads, so the
+same call works whether you paste a page or a direct link:
 
-If the site gives you a direct media URL (a link that downloads `.mp4`/`.webm`
-rather than opening a page), pass that URL directly; no downloader is involved.
-Otherwise use [`yt-dlp`](https://github.com/yt-dlp/yt-dlp), which covers most
-platforms. This tool never calls it, bundles it, or reads any `YT_DLP_*` setting.
+```bash
+video-analyzer analyze_video --input \
+  '{"videoPath":"https://www.youtube.com/watch?v=JAGPK-UCp60","question":"What is the main argument?"}'
+```
+
+Local files and direct media URLs never involve yt-dlp. Platform page URLs do, so
+`yt-dlp` is required for them: without it the call fails with `DEPENDENCY_MISSING`
+and an install hint instead of a vague rejection.
+
+What the tool runs, and what it deliberately does not:
+
+- One video per call — `--no-playlist --playlist-items 1` — even when the URL
+  carries a list id.
+- Video capped at `YT_DLP_MAX_RESOLUTION` (720p by default), preferring H.264/AAC
+  in MP4, with lower-quality fallbacks so a site that only offers VP9/AV1 still
+  works.
+- Bounded by `VIDEO_ANALYZER_DOWNLOAD_MAX_MB` and by
+  `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`; a download that finishes over
+  the size limit is rejected before it reaches Gemini.
+- `--ignore-config`, so your own `~/.config/yt-dlp/config` cannot inject options
+  (including `--exec`) into a tool that only meant to download a video. Use the
+  settings below instead.
+- The tool's SSRF guard validates the URL **it** contacts. yt-dlp then makes its
+  own requests to the platform, which that guard does not cover: treat passing a
+  page URL as authorizing yt-dlp to reach the site it names.
 
 ### Install yt-dlp
 
@@ -284,103 +303,71 @@ platforms. This tool never calls it, bundles it, or reads any `YT_DLP_*` setting
 
 Prebuilt binaries for every platform are on the
 [releases page](https://github.com/yt-dlp/yt-dlp/releases). Confirm with
-`yt-dlp --version`.
+`yt-dlp --version`, and keep it current — a stale extractor is the most common
+cause of a site that worked last month failing today (`yt-dlp -U` for a standalone
+binary, or your package manager's upgrade command).
 
-Keep it current: a stale extractor is the most common cause of a site that worked
-last month failing today. Use `yt-dlp -U` for a standalone binary, or your package
-manager's upgrade command (for example `winget upgrade yt-dlp.yt-dlp`).
+If `yt-dlp` is installed somewhere off `PATH`, set `YT_DLP_PATH` to the executable.
 
-### Fetch, then analyze
+### Settings
 
-```bash
-yt-dlp -f "bv*[height<=720]+ba/b[height<=720]" --merge-output-format mp4 \
-  --no-playlist -o "clip.%(ext)s" "https://www.youtube.com/watch?v=JAGPK-UCp60"
+| Variable                | Default            | Purpose                                                                  |
+| ----------------------- | ------------------ | ------------------------------------------------------------------------ |
+| `YT_DLP_PATH`           | `yt-dlp` from PATH | Executable the tool spawns.                                              |
+| `YT_DLP_MAX_RESOLUTION` | `720`              | Highest video height to download; 144–4320.                              |
+| `YT_DLP_COOKIES_FILE`   | —                  | Netscape cookies file for age-restricted, private, or member-only media. |
+| `YT_DLP_IMPERSONATE`    | —                  | Client passed to `--impersonate`, such as `chrome` or `chrome-136`.      |
 
-video-analyzer analyze_video --input \
-  '{"videoPath":"./clip.mp4","question":"What is the main argument?"}'
-```
+All four are environment-only. A repository's `.env` cannot set them, because they
+name an executable, a credential file, or a network identity.
 
-- **Cap the resolution.** Analysis does not need 4K and upload time follows file
-  size; for this repository's sample video, 720p ran about 3–7 MB per minute
-  depending on codec, so a long talk still costs a large upload.
-- **`--no-playlist`** stops a watch URL that also carries a list id from
-  downloading the whole playlist.
-- **`--merge-output-format mp4`** keeps the result in a container FFmpeg and
-  Gemini read directly. A `.webm` result works too — the path extension or served
-  `Content-Type` only has to be a media type.
-- **Then pass the local path.** The tool reads the file and never sees the
-  originating page or URL.
+### When a platform download fails
 
-### When yt-dlp fails with HTTP 403
+| Symptom                                            | Fix                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------ |
+| `yt-dlp is required ... but was not found on PATH` | Install yt-dlp, or set `YT_DLP_PATH`.                        |
+| `HTTP Error 403` / a bot check                     | `YT_DLP_IMPERSONATE=chrome`, then `YT_DLP_COOKIES_FILE`.     |
+| `The platform requires a signed-in session`        | `YT_DLP_COOKIES_FILE` with cookies from a signed-in browser. |
+| `No stream matches the requested format`           | Raise `YT_DLP_MAX_RESOLUTION`.                               |
+| `yt-dlp cannot impersonate that browser`           | Install `yt-dlp[default]`, or unset `YT_DLP_IMPERSONATE`.    |
 
-A 403 means the page request was accepted and the media request was refused. It is
-a downloader problem, so no setting in this tool changes it and the legacy
-`YT_DLP_*` variables stay inert. Try these in order:
-
-1. **Change the player client.** YouTube intermittently refuses the default
-   `android`/`android_vr` client:
-   `yt-dlp --extractor-args "youtube:player_client=web_safari,ios,mweb" ...` — the
-   live run recorded in [docs/reviews/codebase-review.md](docs/reviews/codebase-review.md)
-   hit exactly that 403 and succeeded with this flag on the first attempt.
-2. **Drop the cache.** `--no-cache-dir` discards a cached player response whose
-   signature may have expired.
-3. **Supply cookies.** Needed for age-restricted, private, or member-only media,
-   and for ordinary videos when the site demands a signed-in session. Pass a
-   Netscape-format cookies file with `--cookies cookies.txt`, or read the browser
-   directly with `--cookies-from-browser`. See [Supplying cookies](#supplying-cookies).
+The tool already asks YouTube for a second player client when the default one is
+refused, which resolves most 403s without configuration.
 
 #### Supplying cookies
 
-There are two ways in, and the choice mostly depends on the browser.
-
-**Read the browser profile directly** — no export step:
-
-```bash
-yt-dlp --cookies-from-browser firefox -f "bv*[height<=720]+ba/b" -o "clip.%(ext)s" "<page-url>"
-```
-
-Supported names are `brave`, `chrome`, `chromium`, `edge`, `firefox`, `opera`,
-`safari`, `vivaldi`, and `whale`. Append `:Profile` to pick a profile
-(`chrome:Default`) and `::Container` for a Firefox container. yt-dlp copies the
-cookie database before reading it, so the browser can stay open. On Linux the
-keyring is auto-detected; add `+gnomekeyring` or `+kwallet` if decryption fails.
-
-Chrome 127 and later on Windows encrypt cookies with App-Bound Encryption, which
-yt-dlp commonly cannot decrypt, so this path fails with `Failed to decrypt` or a
-`DPAPI` error; Chromium-based browsers that ship the same encryption (Edge, Brave)
-can fail the same way. On those, use Firefox or export a file.
-
-**Export a Netscape cookies file** — works everywhere, including Chrome:
+Cookies are needed for age-restricted, private, and member-only media, and
+sometimes for ordinary videos when the site demands a signed-in session. Export
+them to a Netscape-format file and point `YT_DLP_COOKIES_FILE` at it:
 
 1. Sign in to the site in your browser.
-2. Install a cookies exporter — "Get cookies.txt LOCALLY" for Chrome, Edge, or
-   Firefox — and export the cookies for the site's domain (`youtube.com` for
+2. Export the site's cookies with a `cookies.txt` exporter — "Get cookies.txt
+   LOCALLY" for Chrome, Edge, or Firefox — for the domain (`youtube.com` for
    YouTube).
-3. Save it as `cookies.txt` outside your repositories, then pass it:
+3. Save the file outside your repositories, for example
+   `~/.config/video-analyzer/cookies.txt`, and export
+   `YT_DLP_COOKIES_FILE` with its path.
 
-```bash
-yt-dlp --cookies cookies.txt -f "bv*[height<=720]+ba/b" -o "clip.%(ext)s" "<page-url>"
-```
-
-The file is one tab-separated record per cookie — domain, include-subdomains, path,
-secure, expiry in Unix seconds, name, value — under a `# Netscape HTTP Cookie File`
-header. HTTP-only cookies are prefixed `#HttpOnly_`, so keep the `#`-prefixed lines
-in the file:
+The format is one tab-separated record per cookie — domain, include-subdomains,
+path, secure, expiry in Unix seconds, name, value — under a
+`# Netscape HTTP Cookie File` header. HTTP-only cookies are prefixed `#HttpOnly_`,
+so keep the `#`-prefixed lines:
 
 ```text
 # Netscape HTTP Cookie File
 .youtube.com	TRUE	/	TRUE	1789000000	SID	sample-value
 ```
 
-`--cookies` also writes refreshed cookies back to that file when it exits, so keep
-a copy if you want the original and expect yt-dlp to rewrite it. A malformed file
-fails loudly — `ERROR: 'cookies.txt' does not look like a Netscape format cookies
-file` — and `yt-dlp --cookies cookies.txt --simulate -F "<page-url>"` is a cheap
-test that prints the format list without downloading anything.
+Reading the browser profile directly (`yt-dlp --cookies-from-browser`) is not
+exposed as a setting because it usually fails on Windows: Chrome 127 and later
+encrypt cookies with App-Bound Encryption, which yt-dlp cannot decrypt, and Edge
+and Brave inherit the same scheme. Exporting a file works everywhere.
 
-Cookies are live credentials for the account that exported them. Keep the file out
-of version control, restrict its permissions, delete it when finished, and never
-hand it to a host you would not sign in to.
+A malformed file fails loudly with `ERROR: 'cookies.txt' does not look like a
+Netscape format cookies file`. Cookies are live credentials for the account that
+exported them: keep the file out of version control, restrict its permissions, and
+delete it when you are done. yt-dlp rewrites the file with refreshed cookies at
+exit.
 
 ## Configuration
 
@@ -399,11 +386,11 @@ hand it to a host you would not sign in to.
 | `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher. Environment only: the launcher reads the process environment and never a `.env` file. |
 | `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                                                                                                   |
 
-The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled. They are inert here, so the client and cookie workarounds for a 403 live on your own `yt-dlp` command line; see [When yt-dlp fails with HTTP 403](#when-yt-dlp-fails-with-http-403).
+The `YT_DLP_*` settings drive platform downloads and are documented with their defaults in [Getting Media from a Platform](#getting-media-from-a-platform). They are read from the environment only.
 
 The three millisecond settings are capped at `2147483647` (2^31 - 1), the largest delay Node's timers accept; a larger value is rejected as `INVALID_INPUT` rather than silently firing the deadline after one millisecond.
 
-A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, and `VIDEO_ANALYZER_CLI_PATH` are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries that run, the CLI the Skill launcher spawns, or turn off the private-host guard.
+A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, `VIDEO_ANALYZER_CLI_PATH`, and the `YT_DLP_*` settings are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries or credentials that run, or turn off the private-host guard.
 
 Details: [`skills/video-analyzer/references/configuration.md`](skills/video-analyzer/references/configuration.md).
 
@@ -428,7 +415,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Local AI inputs are uploaded each time.** Mutable local files are not cached or coalesced; identical direct downloads can reuse an upload based on their content.
 - **MCP inlines extracted frames.** `extract_frames` embeds JPEGs up to a 2 MiB base64 budget per call; frames that do not fit, including the first, are reported by path instead. Each inlined image is preceded by its path and label. The CLI returns paths only. Frames are capped at a 1280-pixel longest edge without upscaling.
 - **SSRF protection is defense in depth.** Each HTTP redirect is resolved and validated separately, and connections use the validated addresses while preserving the original hostname for TLS. Private hosts are blocked unless explicitly opted in; do not treat media parsing or this filter as a complete sandbox.
-- **External platform downloads are disabled.** The private-host opt-in applies only to direct HTTP downloads and does not enable yt-dlp; URLs with embedded credentials remain blocked. Fetching a platform page is [a manual step](#getting-media-from-a-platform) run outside this tool.
+- **Platform downloads use an external downloader.** Page URLs are fetched by `yt-dlp`, which reaches the platform's own endpoints after the tool's SSRF guard has validated only the URL passed in. Playlists are truncated to the first item, `yt-dlp` config files are ignored, and the download is capped by `YT_DLP_MAX_RESOLUTION` and `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`. URLs with embedded credentials remain blocked.
 - **Temporary cleanup is best-effort.** If removal fails, a warning names the directory so it can be deleted manually. Warnings follow `VIDEO_ANALYZER_LOG_LEVEL`; `silent` suppresses them. Startup cleanup only removes old, marked directories whose owning process has exited. Older unmarked temporary files are left untouched and may need manual removal.
 - **Frame extraction writes to disk.** Each extraction persists frames and a paging manifest until you delete its `data.outputDir`. Later pages use `frameSetDir` and do not download or extract again. By default output goes into `video-analyzer-output/` under the working directory (or `VIDEO_ANALYZER_OUTPUT_DIR`), which this repository ignores in `.gitignore`; add the same entry to any repository you run the tool in.
 
@@ -436,7 +423,7 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 
 ```text
 MCP client ──> MCP adapter ─┐
-                            ├──> operation registry ──> services ──> Gemini / FFmpeg
+                            ├──> operation registry ──> services ──> Gemini / FFmpeg / yt-dlp
 Agent Skill ──> CLI adapter ─┘
 ```
 

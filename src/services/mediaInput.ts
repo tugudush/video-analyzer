@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { rm, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import type { Config } from '../config.js'
@@ -6,6 +6,7 @@ import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { createTempDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
 import { downloadToFile, redactedUrl } from '../utils/net.js'
+import { downloadFromPlatform } from './ytdlp.js'
 import type { Logger } from '../utils/logger.js'
 
 export type MediaSource = 'local' | 'direct'
@@ -106,13 +107,37 @@ async function resolveDirect(
     const declared = result.contentType?.split(';')[0]?.trim().toLowerCase()
     const fromUrl = mimeTypeFromPath(new URL(result.finalUrl).pathname)
 
-    if (
-      declared &&
-      !isMediaMimeType(declared) &&
-      !(declared === 'application/octet-stream' && isMediaMimeType(fromUrl))
-    ) {
+    const returnedMedia =
+      !declared ||
+      isMediaMimeType(declared) ||
+      (declared === 'application/octet-stream' && isMediaMimeType(fromUrl))
+
+    // Only a document is worth handing to the downloader: an image or a JSON
+    // endpoint is not a platform page, and yt-dlp would produce a worse error
+    // than the one this tool can give.
+    const pageLike = /^text\/html|^application\/xhtml\+xml/.test(declared ?? '')
+
+    if (!returnedMedia && pageLike) {
+      // A platform page (HTML, JSON, …) rather than the media itself. The user
+      // asked for what is behind it, so hand the URL to yt-dlp. The probe
+      // response is discarded and the downloaded file replaces it.
+      const platform = await downloadFromPlatform(result.finalUrl, tempDir, config, {
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      })
+      await rm(destination, { force: true })
+      return buildResolved(
+        platform.path,
+        platform.mimeType,
+        platform.sizeBytes,
+        `platform:${platform.mimeType}:${platform.sha256}`,
+      )
+    }
+
+    if (!returnedMedia) {
       throw new VideoAnalyzerError('UNSUPPORTED_INPUT', 'The URL did not return media.', {
-        hint: 'Use a direct media URL or a local file. Platform page downloads are disabled because their destinations cannot be validated.',
+        hint: 'Use a direct media URL, a local file, or a platform page URL (those are downloaded with yt-dlp).',
+        details: { url: redactedUrl(new URL(result.finalUrl)), contentType: result.contentType },
       })
     }
 
@@ -136,6 +161,23 @@ async function resolveDirect(
       )
     }
 
+    return buildResolved(
+      destination,
+      mimeType,
+      result.bytesWritten,
+      `direct:${mimeType}:${result.sha256}`,
+    )
+  } catch (error) {
+    await removeDir(tempDir, opts.logger)
+    throw error
+  }
+
+  function buildResolved(
+    resolvedPath: string,
+    mimeType: string,
+    resolvedSize: number,
+    key: string,
+  ): ResolvedMedia {
     let references = 1
     const release = async () => {
       references -= 1
@@ -143,11 +185,11 @@ async function resolveDirect(
     }
     let cleaned = false
     return {
-      path: destination,
+      path: resolvedPath,
       source: 'direct',
       mimeType,
-      sizeBytes: result.bytesWritten,
-      cacheKey: `direct:${mimeType}:${result.sha256}`,
+      sizeBytes: resolvedSize,
+      cacheKey: key,
       tempDir,
       cleanup: async () => {
         if (cleaned) return
@@ -165,9 +207,6 @@ async function resolveDirect(
         }
       },
     }
-  } catch (error) {
-    await removeDir(tempDir, opts.logger)
-    throw error
   }
 }
 

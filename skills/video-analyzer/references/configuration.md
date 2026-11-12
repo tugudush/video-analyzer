@@ -121,7 +121,21 @@ deadline would then fire before the request starts.
 | `FFMPEG_PATH`  | `ffmpeg`  | ffmpeg executable. Environment only — a `.env` file cannot set it.  |
 | `FFPROBE_PATH` | `ffprobe` | ffprobe executable. Environment only — a `.env` file cannot set it. |
 
-The legacy `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and `YT_DLP_IMPERSONATE` settings have no effect while platform downloads are disabled. There is no setting that enables platform page downloads, and no cookie setting: a platform page is fetched outside the tool, so its 403 workarounds (`--cookies`, `--extractor-args`) belong to that command line. See the repository README, "Getting Media from a Platform".
+## Platform downloads (yt-dlp)
+
+Page URLs are downloaded with `yt-dlp`, which must be installed for them.
+
+| Variable                | Default            | Purpose                                                                   |
+| ----------------------- | ------------------ | ------------------------------------------------------------------------- |
+| `YT_DLP_PATH`           | `yt-dlp` from PATH | Executable to spawn. Environment only.                                    |
+| `YT_DLP_MAX_RESOLUTION` | `720`              | Highest video height to download, 144–4320. Environment only.             |
+| `YT_DLP_COOKIES_FILE`   | —                  | Netscape cookies file for authenticated media. Environment only.          |
+| `YT_DLP_IMPERSONATE`    | —                  | Client for `--impersonate` (`chrome`, `chrome-136`, …). Environment only. |
+
+All four are read from the real environment: a repository's `.env` cannot choose an
+executable, a credential file, or a network identity. `YT_DLP_PATH` that does not
+exist fails as `DEPENDENCY_MISSING`, and `YT_DLP_COOKIES_FILE` that does not exist
+fails as `INVALID_INPUT` before any download starts.
 
 ## Network
 

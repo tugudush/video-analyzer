@@ -48,15 +48,31 @@ Two operational details are worth capturing wherever that guidance lands:
 - The 360p `18` stream is 21.1 MB for 7 minutes, so a typical link costs a
   multi-second download before analysis even starts.
 
-**Resolved on 2026-11-12.** [README](../../README.md#getting-media-from-a-platform)
-now carries a "Getting Media from a Platform" section: install commands for WinGet,
-Scoop, Homebrew, apt, pipx, and pip, a fetch-then-analyze example, and the 403
-ladder (player client, cache, cookies). [SKILL.md](../../skills/video-analyzer/SKILL.md)
-routes a platform URL to that workflow instead of leaving the agent to improvise,
-[troubleshooting.md](../../skills/video-analyzer/references/troubleshooting.md#platform-page-url)
-carries the same path under `UNSUPPORTED_INPUT`, and
-[configuration.md](../../skills/video-analyzer/references/configuration.md) states
-that the legacy `YT_DLP_*` variables stay inert, so no cookie setting exists here.
+**Resolved on 2026-11-12 — first as documentation, then as a feature.** The finding
+started as a docs gap and ended as a behaviour change: a platform page URL is now
+resolved automatically. When a remote URL answers with a document instead of media,
+[mediaInput.ts](../../src/services/mediaInput.ts) hands the final URL to the new
+[ytdlp.ts](../../src/services/ytdlp.ts) service and analyzes the download.
+
+- Scope and guardrails: one video per call, capped at `YT_DLP_MAX_RESOLUTION`
+  (720p), H.264/AAC preferred, bounded by `VIDEO_ANALYZER_DOWNLOAD_MAX_MB` and the
+  request timeout, `--ignore-config` so a user config cannot inject options, and a
+  YouTube player-client fallback that cleared the 403 recorded above.
+- Settings: `YT_DLP_PATH`, `YT_DLP_MAX_RESOLUTION`, `YT_DLP_COOKIES_FILE`, and
+  `YT_DLP_IMPERSONATE` are parsed again (they were inert when this review was
+  written) and are environment-only, because they name an executable, a credential
+  file, or a network identity.
+- [README](../../README.md#getting-media-from-a-platform) documents installation,
+  the settings, and the failure ladder; [SKILL.md](../../skills/video-analyzer/SKILL.md),
+  [troubleshooting.md](../../skills/video-analyzer/references/troubleshooting.md#platform-download-failed),
+  and [configuration.md](../../skills/video-analyzer/references/configuration.md)
+  follow.
+- The claim above that the rejection was "enforced correctly" is now historical:
+  only a _non-document_ non-media response (an image, a JSON endpoint) is still
+  rejected outright.
+- Trade-off accepted: yt-dlp's own requests are outside the SSRF guard, which
+  validates only the URL this tool contacts. That is stated in the README's Known
+  Limitations rather than hidden.
 
 ### P3 — `summarize_video` timestamps carry no envelope warning
 
