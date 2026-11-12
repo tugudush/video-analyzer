@@ -67,6 +67,12 @@ a downloader problem: update yt-dlp, retry with
 `--cookies cookies.txt` only when the media needs an authenticated session. Those
 cookies are account credentials; do not request them for public media.
 
+To supply cookies: `--cookies-from-browser firefox` reads the browser profile
+directly (Chrome 127+ on Windows usually fails with `Failed to decrypt`), or the
+user exports a Netscape-format file and you pass `--cookies cookies.txt`. Test with
+`yt-dlp --cookies cookies.txt --simulate -F "<page-url>"` before a real download.
+The repository README's "Supplying cookies" subsection has the export steps.
+
 ## URL_REJECTED
 
 The host resolves to a private, loopback, link-local, or metadata address, or

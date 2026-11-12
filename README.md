@@ -327,7 +327,56 @@ a downloader problem, so no setting in this tool changes it and the legacy
 3. **Supply cookies.** Needed for age-restricted, private, or member-only media,
    and for ordinary videos when the site demands a signed-in session. Pass a
    Netscape-format cookies file with `--cookies cookies.txt`, or read the browser
-   directly with `--cookies-from-browser chrome` (`firefox`, `edge`, `safari`, …).
+   directly with `--cookies-from-browser`. See [Supplying cookies](#supplying-cookies).
+
+#### Supplying cookies
+
+There are two ways in, and the choice mostly depends on the browser.
+
+**Read the browser profile directly** — no export step:
+
+```bash
+yt-dlp --cookies-from-browser firefox -f "bv*[height<=720]+ba/b" -o "clip.%(ext)s" "<page-url>"
+```
+
+Supported names are `brave`, `chrome`, `chromium`, `edge`, `firefox`, `opera`,
+`safari`, `vivaldi`, and `whale`. Append `:Profile` to pick a profile
+(`chrome:Default`) and `::Container` for a Firefox container. yt-dlp copies the
+cookie database before reading it, so the browser can stay open. On Linux the
+keyring is auto-detected; add `+gnomekeyring` or `+kwallet` if decryption fails.
+
+Chrome 127 and later on Windows encrypt cookies with App-Bound Encryption, which
+yt-dlp commonly cannot decrypt, so this path fails with `Failed to decrypt` or a
+`DPAPI` error; Chromium-based browsers that ship the same encryption (Edge, Brave)
+can fail the same way. On those, use Firefox or export a file.
+
+**Export a Netscape cookies file** — works everywhere, including Chrome:
+
+1. Sign in to the site in your browser.
+2. Install a cookies exporter — "Get cookies.txt LOCALLY" for Chrome, Edge, or
+   Firefox — and export the cookies for the site's domain (`youtube.com` for
+   YouTube).
+3. Save it as `cookies.txt` outside your repositories, then pass it:
+
+```bash
+yt-dlp --cookies cookies.txt -f "bv*[height<=720]+ba/b" -o "clip.%(ext)s" "<page-url>"
+```
+
+The file is one tab-separated record per cookie — domain, include-subdomains, path,
+secure, expiry in Unix seconds, name, value — under a `# Netscape HTTP Cookie File`
+header. HTTP-only cookies are prefixed `#HttpOnly_`, so keep the `#`-prefixed lines
+in the file:
+
+```text
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	1789000000	SID	sample-value
+```
+
+`--cookies` also writes refreshed cookies back to that file when it exits, so keep
+a copy if you want the original and expect yt-dlp to rewrite it. A malformed file
+fails loudly — `ERROR: 'cookies.txt' does not look like a Netscape format cookies
+file` — and `yt-dlp --cookies cookies.txt --simulate -F "<page-url>"` is a cheap
+test that prints the format list without downloading anything.
 
 Cookies are live credentials for the account that exported them. Keep the file out
 of version control, restrict its permissions, delete it when finished, and never
