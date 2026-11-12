@@ -140,7 +140,14 @@ export interface LoadConfigOptions {
   dotenvFile?: string | null
 }
 
-/** Parse configuration from an environment object (defaults to `process.env`). */
+/**
+ * Parse configuration from an environment object (defaults to `process.env`).
+ *
+ * When the real process environment is used, a `.env` file in the working
+ * directory is applied *into* it (real variables win), so `process.env` and the
+ * parsed `Config` stay in sync. Pass an explicit environment object to read
+ * configuration without that side effect; library embedders should prefer it.
+ */
 export function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: LoadConfigOptions = {},

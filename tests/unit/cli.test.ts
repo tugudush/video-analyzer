@@ -1,7 +1,15 @@
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { defaultCliIO, parseArgs, readStdinToEnd, runCli } from '../../src/adapters/cli.js'
+import {
+  defaultCliIO,
+  MAX_INPUT_BYTES,
+  parseArgs,
+  readStdinToEnd,
+  runCli,
+} from '../../src/adapters/cli.js'
 import { VERSION } from '../../src/version.js'
 
 function capture() {
@@ -42,6 +50,13 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['analyze_video', '--input-file'])).toThrowError(/--input-file requires/)
   })
 
+  it('rejects unknown options instead of ignoring them', () => {
+    expect(() => parseArgs(['get_video_info', '--prety'])).toThrowError(/Unknown option: --prety/)
+    expect(() => parseArgs(['get_video_info', '--inputFile', 'args.json'])).toThrowError(
+      /Unknown option: --inputFile/,
+    )
+  })
+
   it('parses --version in both positions', () => {
     expect(parseArgs(['--version']).version).toBe(true)
     expect(parseArgs(['-v']).version).toBe(true)
@@ -69,6 +84,14 @@ describe('readStdinToEnd', () => {
   it('returns undefined for whitespace-only input', async () => {
     const stream = Readable.from([Buffer.from('  \n ')])
     await expect(readStdinToEnd(stream)).resolves.toBeUndefined()
+  })
+
+  it('refuses a payload over the size limit', async () => {
+    const stream = Readable.from([Buffer.alloc(MAX_INPUT_BYTES + 1, 0x20)])
+    await expect(readStdinToEnd(stream)).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      details: { source: 'stdin', maxBytes: MAX_INPUT_BYTES },
+    })
   })
 
   it('reports a stream error instead of returning partial data', async () => {
@@ -185,6 +208,28 @@ describe('runCli', () => {
     expect(code).toBe(1)
     const message = (JSON.parse(stdoutText()) as { error: { message: string } }).error.message
     expect(message).toContain('question')
+  })
+
+  it('refuses an oversized --input-file before loading it', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'va-cli-input-'))
+    try {
+      const file = path.join(dir, 'args.json')
+      await writeFile(file, ' '.repeat(MAX_INPUT_BYTES + 1), 'utf8')
+      const { io, stdoutText, stderrText } = capture()
+
+      const code = await runCli(['get_video_info', '--input-file', file], io, {})
+
+      expect(code).toBe(1)
+      const payload = JSON.parse(stdoutText()) as {
+        error: { code: string; message: string; details?: { source?: string } }
+      }
+      expect(payload.error.code).toBe('INVALID_INPUT')
+      expect(payload.error.message).toContain(`${MAX_INPUT_BYTES}-byte limit`)
+      expect(payload.error.details?.source).toBe(file)
+      expect(stderrText()).toContain('INVALID_INPUT')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('surfaces configuration errors before running', async () => {

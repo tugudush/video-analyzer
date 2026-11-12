@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
+  TIMESTAMP_ESTIMATE_WARNING,
   assertGeminiAvailable,
   getGeminiService,
   prepareMedia,
@@ -65,6 +66,7 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
           source: prepared.media.source,
           ...(input.focus ? { focus: input.focus } : {}),
         },
+        warnings: [TIMESTAMP_ESTIMATE_WARNING],
       }
     } finally {
       await prepared.media.cleanup()

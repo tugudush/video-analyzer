@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
+  TIMESTAMP_ESTIMATE_WARNING,
   assertGeminiAvailable,
   formatTimestamp,
   getGeminiService,
@@ -109,9 +110,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
 
       const matches = parseTimestampMatches(response)
       const durationSeconds = prepared.metadata.durationSeconds
-      const warnings: string[] = [
-        'Timestamps are Gemini estimates derived from its internal sampling, not frame-accurate seek positions. Verify with extract_frames before cutting.',
-      ]
+      const warnings: string[] = [TIMESTAMP_ESTIMATE_WARNING]
 
       if (isNoMatch(response)) {
         return {

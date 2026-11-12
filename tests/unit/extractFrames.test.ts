@@ -154,7 +154,7 @@ describe('extract_frames frame budgets', () => {
 
   it('stops production at the configured frame budget', async () => {
     const { frameLimit } = installFakes({ durationSeconds: 60 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '3' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '3' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -177,7 +177,7 @@ describe('extract_frames frame budgets', () => {
 
   it('reports the expected count when the hard ceiling applies', async () => {
     installFakes({ durationSeconds: 600 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '0' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '0' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -196,7 +196,7 @@ describe('extract_frames frame budgets', () => {
 
   it('passes the hard cap to ffmpeg when the configured budget is uncapped', async () => {
     const { frameLimit } = installFakes({ durationSeconds: 60 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '0' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '0' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -214,7 +214,7 @@ describe('extract_frames frame budgets', () => {
 
   it('does not warn when the interval fits the budget', async () => {
     installFakes({ durationSeconds: 4 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '100' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '100' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -229,7 +229,7 @@ describe('extract_frames frame budgets', () => {
 
   it('pages the budgeted frames without changing how many are produced', async () => {
     installFakes({ durationSeconds: 50 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '5' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '5' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -247,13 +247,14 @@ describe('extract_frames frame budgets', () => {
 
   it('pages a saved frame set without probing or extracting again', async () => {
     installFakes({ durationSeconds: 10 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '3' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '3' })
     const first = await executeOperation(
       extractFramesOperation,
       { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 1 },
       config,
     )
     const frameSetDir = artifactDirOf(first.data)
+    expect(first.summary).toContain('Extracted')
     const calls = mocks.execFile.mock.calls.length
     await rm(source)
 
@@ -275,6 +276,8 @@ describe('extract_frames frame budgets', () => {
       frameBudget: 3,
     })
     expect(second.images?.[0]?.path).toBe(path.join(frameSetDir, 'frame-0002.jpg'))
+    expect(second.summary).toContain('Returned frames 2-2 of 3')
+    expect(second.summary).not.toContain('Extracted')
     expect(second.warnings?.join(' ')).toContain('3-frame budget')
 
     const third = await executeOperation(
@@ -283,11 +286,12 @@ describe('extract_frames frame budgets', () => {
       config,
     )
     expect(third.data).toMatchObject({ hasMore: false, timestamps: [2] })
+    expect(third.summary).toContain('Returned frames 3-3 of 3')
     expect(mocks.execFile.mock.calls).toHaveLength(calls)
   })
 
   it('rejects invalid frame sets and conflicting extraction options', async () => {
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     await expect(
       executeOperation(extractFramesOperation, { frameSetDir: dir, videoPath: source }, config),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
@@ -312,7 +316,7 @@ describe('extract_frames frame budgets', () => {
 
   it('reports a missing frame in a saved page', async () => {
     installFakes({ durationSeconds: 2 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     const first = await executeOperation(
       extractFramesOperation,
       { videoPath: source, mode: 'interval', intervalSec: 1, maxImages: 1 },
@@ -327,7 +331,7 @@ describe('extract_frames frame budgets', () => {
 
   it('exposes the expected count and applied budget in data', async () => {
     installFakes({ durationSeconds: 60 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '3' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '3' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -341,7 +345,7 @@ describe('extract_frames frame budgets', () => {
 
   it('treats a configured 500 as the hard ceiling when advising the user', async () => {
     installFakes({ durationSeconds: 600 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '500' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '500' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -357,7 +361,7 @@ describe('extract_frames frame budgets', () => {
 
   it('marks a scene result truncated when the ceiling clips the list', async () => {
     installFakes({ durationSeconds: 60, sceneTimes: [1, 2, 3, 4] })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '2' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '2' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -378,7 +382,7 @@ describe('extract_frames frame budgets', () => {
 
   it('does not mark a complete scene result truncated', async () => {
     installFakes({ durationSeconds: 60, sceneTimes: [1, 2] })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '10' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '10' })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -393,7 +397,7 @@ describe('extract_frames frame budgets', () => {
 
   it('distinguishes closely spaced scene timestamps when applying the budget', async () => {
     installFakes({ durationSeconds: 1, sceneTimes: [0.1001, 0.1002] })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '1' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '1' })
     const result = await executeOperation(
       extractFramesOperation,
       { videoPath: source, mode: 'scene', outputDir: path.join(dir, 'frames') },
@@ -404,7 +408,7 @@ describe('extract_frames frame budgets', () => {
 
   it('reports truncation even if the extra scene has a duplicate timestamp', async () => {
     installFakes({ durationSeconds: 1, sceneTimes: [0.1, 0.1, 0.2] })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '1' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '1' })
     const result = await executeOperation(
       extractFramesOperation,
       { videoPath: source, mode: 'scene', outputDir: path.join(dir, 'frames') },
@@ -422,10 +426,15 @@ describe('extract_frames frame budgets', () => {
         }),
       )
     })
-    const result = await extractSceneFrames(source, 0.1, loadConfig({}), {
-      outDir: dir,
-      maxFrames: 1,
-    })
+    const result = await extractSceneFrames(
+      source,
+      0.1,
+      loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir }),
+      {
+        outDir: dir,
+        maxFrames: 1,
+      },
+    )
     expect(result).toEqual({ paths: [], timestamps: [], truncated: false })
     expect(mocks.execFile).toHaveBeenCalledTimes(2)
     const retryArgs = mocks.execFile.mock.calls[1]?.[1] as string[]
@@ -442,14 +451,17 @@ describe('extract_frames frame budgets', () => {
       cb(Object.assign(new Error('decoder failed'), { stderr: 'Invalid data found.' }))
     })
     await expect(
-      extractSceneFrames(source, 0.1, loadConfig({}), { outDir: dir, maxFrames: 1 }),
+      extractSceneFrames(source, 0.1, loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir }), {
+        outDir: dir,
+        maxFrames: 1,
+      }),
     ).rejects.toMatchObject({ code: 'MEDIA_PROCESSING_FAILED' })
     expect(mocks.execFile).toHaveBeenCalledTimes(1)
   })
 
   it('rejects a sub-minimum intervalSec before producing any frame', async () => {
     installFakes({ durationSeconds: 60 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     await expect(
       executeOperation(
@@ -479,7 +491,7 @@ describe('extract_frames frame budgets', () => {
 
   it('says no frames are on a page past the produced set', async () => {
     installFakes({ durationSeconds: 4 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     const outputDir = path.join(dir, 'frames')
 
     const result = await executeOperation(
@@ -506,7 +518,7 @@ describe('extract_frames frame budgets', () => {
       executeOperation(
         extractFramesOperation,
         { videoPath: source, mode: 'even' },
-        loadConfig({ FFPROBE_PATH: missing }),
+        loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, FFPROBE_PATH: missing }),
       ),
     ).rejects.toMatchObject({
       code: 'DEPENDENCY_MISSING',
@@ -533,7 +545,7 @@ describe('extract_frames output directory isolation', () => {
 
   it('reports only the frames written by the current run in a reused directory', async () => {
     installFakes({ durationSeconds: 10 })
-    const config = loadConfig({ VIDEO_ANALYZER_MAX_FRAMES: '50' })
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir, VIDEO_ANALYZER_MAX_FRAMES: '50' })
     const outputDir = path.join(dir, 'frames')
 
     const first = await executeOperation(
@@ -568,7 +580,7 @@ describe('extract_frames output directory isolation', () => {
 
   it('does not count unrelated JPEGs in a reused directory', async () => {
     installFakes({ durationSeconds: 4 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     const outputDir = path.join(dir, 'frames')
     await mkdir(outputDir, { recursive: true })
     await writeFile(path.join(outputDir, 'screenshot.jpg'), 'not a frame')
@@ -588,7 +600,7 @@ describe('extract_frames output directory isolation', () => {
 
   it('rejects a frame directory that already holds frames', async () => {
     installFakes({ durationSeconds: 5 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     const outDir = path.join(dir, 'dirty')
     await mkdir(outDir, { recursive: true })
     await writeFile(path.join(outDir, 'frame-0001.jpg'), 'stale frame')
@@ -604,7 +616,7 @@ describe('extract_frames output directory isolation', () => {
 
   it('applies the same guard to even extraction', async () => {
     installFakes({ durationSeconds: 5 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
     const outDir = path.join(dir, 'dirty-even')
     await mkdir(outDir, { recursive: true })
     await writeFile(path.join(outDir, 'frame-0001.jpg'), 'stale frame')
@@ -658,7 +670,7 @@ describe('extract_frames timestamps mode', () => {
 
   it('rejects a timestamp beyond the media duration before any subprocess runs', async () => {
     installFakes({ durationSeconds: 2 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     await expect(
       executeOperation(
@@ -678,7 +690,7 @@ describe('extract_frames timestamps mode', () => {
 
   it('rejects a timestamp at the exact duration', async () => {
     installFakes({ durationSeconds: 2 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     await expect(
       executeOperation(
@@ -691,7 +703,7 @@ describe('extract_frames timestamps mode', () => {
 
   it('labels each requested timestamp', async () => {
     installFakes({ durationSeconds: 5 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     const result = await executeOperation(
       extractFramesOperation,
@@ -713,7 +725,7 @@ describe('extract_frames timestamps mode', () => {
 
   it('reports a missing output file and removes the partial artifact folder', async () => {
     installFakes({ durationSeconds: 5, writeOutputs: false })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     await expect(
       executeOperation(
@@ -747,7 +759,7 @@ describe('extract_frames interval timestamps', () => {
 
   it('labels sampling-grid times as approximate on every page', async () => {
     installFakes({ durationSeconds: 4 })
-    const config = loadConfig({})
+    const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
 
     const result = await executeOperation(
       extractFramesOperation,
@@ -791,7 +803,7 @@ describe('extract_frames audio-only input', () => {
     'rejects %s mode with an actionable error',
     async (mode) => {
       installFakes({ durationSeconds: 10, hasVideo: false, sceneTimes: [1] })
-      const config = loadConfig({})
+      const config = loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir })
       const input =
         mode === 'interval'
           ? { videoPath: source, mode, intervalSec: 1 }
@@ -858,7 +870,7 @@ describe('extract_frames cancellation', () => {
           intervalSec: 1,
           outputDir: path.join(dir, 'frames'),
         },
-        loadConfig({}),
+        loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir }),
         { signal: controller.signal },
       ),
     ).rejects.toMatchObject({
@@ -900,7 +912,7 @@ describe('extract_frames cancellation', () => {
           intervalSec: 1,
           outputDir: path.join(dir, 'frames'),
         },
-        loadConfig({}),
+        loadConfig({ VIDEO_ANALYZER_OUTPUT_DIR: dir }),
       ),
     ).rejects.toMatchObject({
       code: 'MEDIA_PROCESSING_FAILED',

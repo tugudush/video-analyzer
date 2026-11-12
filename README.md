@@ -421,6 +421,8 @@ The three millisecond settings are capped at `2147483647` (2^31 - 1), the larges
 
 A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, `VIDEO_ANALYZER_CLI_PATH`, and the `YT_DLP_*` settings are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries or credentials that run, or turn off the private-host guard.
 
+When `loadConfig()` is called without an explicit environment object — as the CLI and MCP entry points do — a `.env` file is applied into `process.env` (real variables win), so the parsed settings and the process environment stay in sync. Embedders that read configuration without touching global process state should pass their own environment object, as the tests do.
+
 Details: [`skills/video-analyzer/references/configuration.md`](skills/video-analyzer/references/configuration.md).
 
 ## Errors
@@ -474,6 +476,18 @@ npm run check        # typecheck + lint + tests + format check
 `npm test` and `npm run check` run `npm run build` first (`pretest`). The Skill suite drives the packaged launcher in `dist/`, so without that build a clean checkout would fail for a reason unrelated to the change.
 
 Integration tests generate their own media fixtures with ffmpeg and skip when ffmpeg or ffprobe is unavailable. Check the test runner's skip count before relying on a green run.
+
+An opt-in live smoke test (`tests/integration/liveGemini.test.ts`) uploads a generated two-second clip to Gemini and checks the answer. It runs only when `VIDEO_ANALYZER_LIVE_TEST=1` and a Gemini API key are set for the test process and ffmpeg is installed, so the default suite stays offline and free:
+
+```bash
+# bash
+VIDEO_ANALYZER_LIVE_TEST=1 npm test
+```
+
+```powershell
+# PowerShell
+$env:VIDEO_ANALYZER_LIVE_TEST='1'; npm test
+```
 
 ### Why oxlint instead of ESLint
 

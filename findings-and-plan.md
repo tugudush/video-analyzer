@@ -3,9 +3,12 @@
 > **Superseded.** This is the original design document, kept for rationale. Several
 > decisions changed during implementation and are **not** described here:
 >
-> - **Platform page downloads are disabled.** yt-dlp is not used and the
->   `YT_DLP_*` settings are unread; only direct HTTP(S) media URLs work, because
->   platform destinations cannot be validated against SSRF.
+> - **Platform page downloads are enabled.** When a remote URL answers with a
+>   document, the tool hands the final URL to `yt-dlp` and analyzes what it
+>   downloads. The `YT_DLP_*` environment settings control the executable,
+>   resolution cap (720p by default), cookies, and impersonation; there is no
+>   licensing gate. The SSRF guard validates only the URL the tool contacts, and
+>   direct HTTP(S) media URLs never involve yt-dlp.
 > - **No AI-side frame sampling.** The four AI operations send the whole file to
 >   Gemini; `VIDEO_ANALYZER_MAX_FRAMES` only affects `extract_frames`.
 > - **`transcribe_video` can write a transcript file** (`outputPath`), so it is
