@@ -104,7 +104,7 @@ Restart the client, then ask for something like _"Summarize ./demo.mp4"_.
 
 The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the CLI directly — it does **not** talk to the MCP server.
 
-1. Copy the folder into a Skill location. The same folder works for VS Code / Copilot and for Claude Code:
+1. Copy the folder into a Skill location. The same folder works in every client below:
 
    ```bash
    # VS Code / Copilot — project-scoped (committed with the repo)
@@ -123,14 +123,18 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
    mkdir -p ~/.claude/skills
    cp -r skills/video-analyzer ~/.claude/skills/
 
+   # Antigravity — personal (App, CLI, and IDE)
+   mkdir -p ~/.gemini/config/skills
+   cp -r skills/video-analyzer ~/.gemini/config/skills/
+
    # Agent-agnostic — personal (read by Copilot, Cursor, Codex, and OpenCode; not by Claude Code or Antigravity)
    mkdir -p ~/.agents/skills
    cp -r skills/video-analyzer ~/.agents/skills/
    ```
 
-   `.agents/skills/` (project) is read by Copilot, Cursor, Codex, OpenCode, and Antigravity. `~/.agents/skills/` (personal) is read by Copilot, Cursor, Codex, and OpenCode, but not by Claude Code or Antigravity.
+   `.agents/skills/` (project) is read by Copilot, Cursor, Codex, OpenCode, and Antigravity. `~/.agents/skills/` (personal) is read by Copilot, Cursor, Codex, and OpenCode, but not by Claude Code or Antigravity — Antigravity reads personal Skills only from `~/.gemini/config/skills/`. Copilot and OpenCode also read `~/.claude/skills/`, so that one copy covers Copilot, Claude Code, and OpenCode; Codex never reads it.
 
-   **User-level (global) installs need one extra command.** A Skill copied into `~/.copilot/skills` or `~/.claude/skills` no longer sits next to `dist/cli.js`, so the launcher falls back to a `video-analyzer` command on `PATH`. Build the CLI, then expose it:
+   **User-level (global) installs need one extra command.** A Skill copied into `~/.copilot/skills`, `~/.claude/skills`, `~/.agents/skills`, or `~/.gemini/config/skills` no longer sits next to `dist/cli.js`, so the launcher falls back to a `video-analyzer` command on `PATH`. Build the CLI, then expose it:
 
    ```bash
    # Run inside the repo clone
