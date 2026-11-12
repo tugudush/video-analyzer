@@ -321,6 +321,29 @@ If `yt-dlp` is installed somewhere off `PATH`, set `YT_DLP_PATH` to the executab
 All four are environment-only. A repository's `.env` cannot set them, because they
 name an executable, a credential file, or a network identity.
 
+Windows environment variables work directly. Either the Environment Variables
+dialog (_Win+R_ → `sysdm.cpl` → Advanced → Environment Variables → **User
+variables** → New), or PowerShell writing that same user variable:
+
+```powershell
+[Environment]::SetEnvironmentVariable('YT_DLP_COOKIES_FILE', 'C:\Users\you\.config\video-analyzer\cookies.txt', 'User')
+[Environment]::SetEnvironmentVariable('YT_DLP_IMPERSONATE', 'chrome', 'User')
+```
+
+Use `'Machine'` instead of `'User'` for the whole system; that needs an elevated
+shell. A `User` variable is enough for the tool and does not require admin rights.
+
+Two things to know:
+
+- **Restart VS Code afterwards.** Windows stores the variable immediately, but a
+  process receives its environment snapshot only at startup, and the integrated
+  terminal inherits VS Code's snapshot rather than reading the registry. The
+  `env` block of an MCP config applies to the MCP server only; the Skill path
+  inherits the process environment, so an OS variable serves both.
+- **Real environment variables win over `.env`.** If `.env` ever holds a
+  `VIDEO_ANALYZER_*` value you want to override, the OS variable is the one used.
+  For `YT_DLP_*` there is nothing to override: `.env` cannot set them at all.
+
 ### When a platform download fails
 
 | Symptom                                            | Fix                                                          |
