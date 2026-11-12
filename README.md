@@ -169,6 +169,8 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 
    > **After setting a Windows environment variable, restart VS Code.** Windows stores it immediately, but a process only receives an environment snapshot when it starts. Restarting just the terminal is not enough — the integrated terminal inherits VS Code's environment, not the registry.
    >
+   > **Developer: Reload Window is not enough either.** That restarts the window and its extension host, but both inherit the environment of the main `Code.exe` process, which is still running with its old snapshot. Quit every VS Code window so the main process exits, then relaunch; or start VS Code from a shell that already has the variable (`code .`); or run `code --restart`. Restarting the local agent host has the same limitation, because it is re-spawned by the same stale parent.
+   >
    > Enter the value without surrounding characters: a surrounding quote pair is kept literally in a real environment variable, and a trailing space is trimmed.
    >
    > The `env` block in an MCP config applies **only** to the MCP server. The Skill path never reads it — it inherits the process environment instead. If you use both interfaces, set the key in the OS environment (or `.env`) so both see it.
@@ -335,11 +337,15 @@ shell. A `User` variable is enough for the tool and does not require admin right
 
 Two things to know:
 
-- **Restart VS Code afterwards.** Windows stores the variable immediately, but a
-  process receives its environment snapshot only at startup, and the integrated
-  terminal inherits VS Code's snapshot rather than reading the registry. The
-  `env` block of an MCP config applies to the MCP server only; the Skill path
-  inherits the process environment, so an OS variable serves both.
+- **Restart VS Code afterwards — all windows.** Windows stores the variable
+  immediately, but a process receives its environment snapshot only at startup,
+  and the integrated terminal inherits VS Code's snapshot rather than reading the
+  registry. _Developer: Reload Window_ is not enough: it restarts the window and
+  extension host, which inherit the still-running main process's snapshot. Quit
+  every window and relaunch, start VS Code from a shell that already has the
+  variable, or run `code --restart`. The `env` block of an MCP config applies to
+  the MCP server only; the Skill path inherits the process environment, so an OS
+  variable serves both.
 - **Real environment variables win over `.env`.** If `.env` ever holds a
   `VIDEO_ANALYZER_*` value you want to override, the OS variable is the one used.
   For `YT_DLP_*` there is nothing to override: `.env` cannot set them at all.
