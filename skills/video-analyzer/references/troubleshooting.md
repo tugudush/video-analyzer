@@ -33,7 +33,8 @@ export FFPROBE_PATH=/usr/bin/ffprobe
 was a page URL (YouTube, Vimeo, …), which is downloaded with `yt-dlp`. Install it
 (`winget install --id yt-dlp.yt-dlp`, `brew install yt-dlp`, `pipx install yt-dlp`)
 or set `YT_DLP_PATH` to the executable. Local files and direct media URLs never
-need it.
+need it, and an AI operation on a public YouTube URL asks Gemini to fetch the page
+instead, so it does not need `yt-dlp` either — a private or unlisted one does.
 
 ## INPUT_NOT_FOUND
 
@@ -55,8 +56,11 @@ Cause and fix:
 
 ## Platform download failed
 
-A page URL (YouTube, Vimeo, …) is downloaded with `yt-dlp` automatically. Failures
-come from that binary or from the platform, so the fix is on the `yt-dlp` side.
+A page URL (YouTube, Vimeo, …) is downloaded with `yt-dlp` automatically when
+Gemini cannot fetch it itself. Failures come from that binary or from the
+platform, so the fix is on the `yt-dlp` side. A `GEMINI_REQUEST_FAILED` that
+names a URL or unsupported video means the direct route was refused and the tool
+fell back to `yt-dlp`; the download then failed for one of the reasons below.
 
 | Message                                       | Fix                                                                                     |
 | --------------------------------------------- | --------------------------------------------------------------------------------------- |

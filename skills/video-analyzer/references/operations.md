@@ -64,7 +64,9 @@ Answer a question about the video, using both picture and audio.
 node ./scripts/invoke.mjs analyze_video '{"videoPath":"./demo.mp4","question":"What does the presenter claim about pricing?"}'
 ```
 
-Returns `summary` containing the answer and `data.durationSeconds`.
+Returns `summary` containing the answer and `data.durationSeconds`, which is
+`null` when Gemini fetched the media itself (a YouTube URL or a small public
+direct URL) and no local probe was possible. A warning says so when it applies.
 
 Use for targeted questions. For a whole-video overview use `summarize_video`.
 
@@ -112,6 +114,11 @@ a no-match or unparsed answer so the model's own wording is not lost. A match wh
 start, or whose range end, is past the end of the clip cannot be real, so it is
 reported with a warning rather than silently trusted. An end at or before its start
 is not a range and is reported as a single timestamp.
+
+`data.durationSeconds` is `null` when Gemini fetched the media itself (a YouTube
+URL or a small public direct URL). Past-the-end checks are then skipped, and a
+warning says metadata-based checks were unavailable; do not claim a match is
+inside the clip on the strength of an unchecked estimate.
 
 Reads `NO_MATCH` as "not found". Always relay the estimate warning.
 Verify a candidate time with `extract_frames` before cutting anything.

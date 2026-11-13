@@ -114,6 +114,15 @@ deadline would then fire before the request starts.
 | --------------------------- | ----------------- | ------------------------------------------------------------------------------- |
 | `VIDEO_ANALYZER_OUTPUT_DIR` | current directory | Base directory for `video-analyzer-output/` folders that hold extracted frames. |
 
+## Caching
+
+| Variable                   | Default | Purpose                                                                                                                                                                                                                                     |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_CACHE_DIR` | —       | Opt-in directory for the persistent Gemini upload-reference cache. When unset, uploads are reused only within one process. Environment only — a `.env` file cannot set it. Stored metadata is a file name, MIME type, and expiry; no media. |
+
+Deleting the cache directory only removes local references. It does not delete
+files already uploaded to Gemini, which follow the provider's 48-hour retention.
+
 ## Binaries
 
 | Variable       | Default   | Purpose                                                             |

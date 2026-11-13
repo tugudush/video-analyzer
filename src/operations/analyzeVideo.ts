@@ -1,10 +1,9 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
+  DIRECT_MEDIA_METADATA_WARNING,
   assertGeminiAvailable,
-  getGeminiService,
-  prepareMedia,
-  uploadIdentityFor,
+  withAiMedia,
 } from './shared.js'
 import type { Operation } from './types.js'
 
@@ -24,31 +23,26 @@ export const analyzeVideoOperation: Operation<typeof analyzeVideoInput> = {
 
   async run(input, ctx) {
     assertGeminiAvailable(ctx)
-    const prepared = await prepareMedia(input.videoPath, ctx)
-    try {
-      const service = getGeminiService(ctx)
-      const upload = uploadIdentityFor(prepared.media)
 
-      const answer = await service.generateWithFile({
-        path: prepared.path,
-        mimeType: prepared.media.mimeType,
-        ...upload,
+    const {
+      result: answer,
+      metadata,
+      source,
+    } = await withAiMedia(input.videoPath, ctx, (media) =>
+      media.generate({
         prompt: input.question,
         systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
-        ...(ctx.signal ? { signal: ctx.signal } : {}),
-        ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
-      })
+      }),
+    )
 
-      return {
-        summary: answer.trim(),
-        data: {
-          question: input.question,
-          durationSeconds: prepared.metadata.durationSeconds,
-          source: prepared.media.source,
-        },
-      }
-    } finally {
-      await prepared.media.cleanup()
+    return {
+      summary: answer.trim(),
+      data: {
+        question: input.question,
+        durationSeconds: metadata?.durationSeconds ?? null,
+        source,
+      },
+      ...(metadata ? {} : { warnings: [DIRECT_MEDIA_METADATA_WARNING] }),
     }
   },
 }

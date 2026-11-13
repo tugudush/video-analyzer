@@ -3,7 +3,10 @@ import path from 'node:path'
 import { requireGeminiApiKey, type Config } from '../config.js'
 import { GeminiMediaService } from '../services/gemini.js'
 import { getMediaMetadata, type MediaMetadata } from '../services/ffmpeg.js'
+import { createLocalSnapshot } from '../services/localSnapshot.js'
+import { classifyAiInput, isDirectUrlRejection } from '../services/mediaRouting.js'
 import { resolveMediaInput, type ResolvedMedia } from '../services/mediaInput.js'
+import { FileUploadReferenceStore, credentialScope } from '../services/uploadCache.js'
 import { VideoAnalyzerError } from '../utils/errors.js'
 import { ensureDir } from '../utils/fsUtils.js'
 import type { OperationContext } from './types.js'
@@ -23,10 +26,29 @@ export function getGeminiService(ctx: OperationContext): GeminiMediaService {
   }
   let service = services.get(ctx.logger)
   if (!service) {
-    service = new GeminiMediaService({ config: ctx.config, logger: ctx.logger })
+    const store = createUploadStore(ctx)
+    service = new GeminiMediaService({
+      config: ctx.config,
+      logger: ctx.logger,
+      ...(store ? { store } : {}),
+    })
     services.set(ctx.logger, service)
   }
   return service
+}
+
+/**
+ * On-disk reference cache, only when the caller opted in.
+ *
+ * The store is partitioned by a one-way fingerprint of the API key so a
+ * reference created with one credential is never offered to another.
+ */
+function createUploadStore(ctx: OperationContext): FileUploadReferenceStore | undefined {
+  const dir = ctx.config.cacheDir
+  if (!dir) return undefined
+  const scope = credentialScope(ctx.config.geminiApiKey)
+  if (!scope) return undefined
+  return new FileUploadReferenceStore({ dir: path.resolve(dir), scope, logger: ctx.logger })
 }
 
 /**
@@ -102,6 +124,230 @@ export function uploadIdentityFor(media: ResolvedMedia): UploadIdentity {
   return {
     ...(media.cacheKey ? { cacheKey: media.cacheKey } : {}),
     ...(media.retainSource ? { retainSource: media.retainSource } : {}),
+  }
+}
+
+/**
+ * Warning attached to a result whose meeting metadata was never read locally,
+ * because Gemini fetched the media itself.
+ */
+export const DIRECT_MEDIA_METADATA_WARNING =
+  'Gemini fetched the media directly, so duration and stream details were not read locally. Checks that need local metadata were skipped.'
+
+export type AiMediaSource = 'local' | 'download' | 'gemini-url'
+
+export interface AiPromptOptions {
+  prompt: string
+  systemInstruction?: string
+  temperature?: number
+}
+
+/** What an AI operation may ask of one resolved input. */
+export interface AiMediaSession {
+  source: AiMediaSource
+  /** ffprobe metadata; null when the provider fetches the media itself. */
+  metadata: MediaMetadata | null
+  /** Local file actually used (a snapshot for local inputs); null for URL input. */
+  path: string | null
+  generate(options: AiPromptOptions): Promise<string>
+}
+
+interface ResolvedAiMedia {
+  source: AiMediaSource
+  metadata: MediaMetadata | null
+  path: string | null
+  mimeType: string | undefined
+  cacheKey?: string
+  geminiUrl?: string
+  retainSource?: () => () => Promise<void>
+  cleanup(): Promise<void>
+}
+
+async function resolveAiMedia(input: string, ctx: OperationContext): Promise<ResolvedAiMedia> {
+  const trimmed = input.trim()
+
+  const remote = /^https?:\/\//i.test(trimmed)
+  if (remote) {
+    ctx.onProgress?.('Resolving media input…')
+    const route = await classifyAiInput(
+      trimmed,
+      ctx.config,
+      ctx.signal ? { signal: ctx.signal } : {},
+    )
+
+    if (route.kind === 'gemini-url') {
+      return {
+        source: 'gemini-url',
+        metadata: null,
+        path: null,
+        mimeType: route.mimeType,
+        geminiUrl: route.url,
+        cleanup: async () => undefined,
+      }
+    }
+  }
+
+  const media = await resolveMediaInput(trimmed, ctx.config, {
+    logger: ctx.logger,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
+  })
+
+  if (media.source === 'local') {
+    // A mutable path cannot identify its contents. The snapshot makes the hash
+    // and the upload read the same bytes, and it is what gets probed.
+    let snapshot
+    try {
+      snapshot = await createLocalSnapshot(media.path, {
+        logger: ctx.logger,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      })
+    } catch (error) {
+      await media.cleanup()
+      throw error
+    }
+
+    try {
+      const metadata = await getMediaMetadata(snapshot.path, ctx.config, ctx.signal)
+      return {
+        source: 'local',
+        metadata,
+        path: snapshot.path,
+        mimeType: media.mimeType,
+        cacheKey: `local:${media.mimeType}:${snapshot.sha256}`,
+        retainSource: snapshot.retain,
+        cleanup: snapshot.cleanup,
+      }
+    } catch (error) {
+      await snapshot.cleanup()
+      throw error
+    }
+  }
+
+  try {
+    const metadata = await getMediaMetadata(media.path, ctx.config, ctx.signal)
+    return {
+      source: 'download',
+      metadata,
+      path: media.path,
+      mimeType: media.mimeType,
+      ...(media.cacheKey ? { cacheKey: media.cacheKey } : {}),
+      ...(media.retainSource ? { retainSource: media.retainSource } : {}),
+      cleanup: media.cleanup,
+    }
+  } catch (error) {
+    await media.cleanup()
+    throw error
+  }
+}
+
+/** Request options shared by both Gemini media routes. */
+interface GeminiPromptParams {
+  prompt: string
+  systemInstruction?: string
+  temperature?: number
+  signal?: AbortSignal
+  onProgress?: (message: string) => void
+}
+
+async function generateFor(
+  resolved: ResolvedAiMedia,
+  input: string,
+  ctx: OperationContext,
+  options: AiPromptOptions,
+): Promise<string> {
+  const service = getGeminiService(ctx)
+  const common: GeminiPromptParams = {
+    prompt: options.prompt,
+    ...(options.systemInstruction ? { systemInstruction: options.systemInstruction } : {}),
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
+  }
+
+  if (resolved.geminiUrl) {
+    try {
+      return await service.generateWithUrl({
+        url: resolved.geminiUrl,
+        ...(resolved.mimeType ? { mimeType: resolved.mimeType } : {}),
+        ...common,
+      })
+    } catch (error) {
+      // Only a provider rejection of the URL itself downgrades to a download;
+      // quota, auth, timeout, and cancellation failures stay visible.
+      if (!isDirectUrlRejection(error)) throw error
+      ctx.logger.info('Gemini could not use the media URL directly; downloading instead.')
+      return generateFromDownload(input, ctx, common)
+    }
+  }
+
+  if (!resolved.path) {
+    throw new VideoAnalyzerError('INTERNAL', 'No media file or URL was resolved for the request.')
+  }
+
+  return service.generateWithFile({
+    path: resolved.path,
+    mimeType: resolved.mimeType ?? 'application/octet-stream',
+    ...(resolved.cacheKey ? { cacheKey: resolved.cacheKey } : {}),
+    ...(resolved.retainSource ? { retainSource: resolved.retainSource } : {}),
+    ...common,
+  })
+}
+
+async function generateFromDownload(
+  input: string,
+  ctx: OperationContext,
+  common: GeminiPromptParams,
+): Promise<string> {
+  const media = await resolveMediaInput(input, ctx.config, {
+    logger: ctx.logger,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
+  })
+  try {
+    return await getGeminiService(ctx).generateWithFile({
+      path: media.path,
+      mimeType: media.mimeType,
+      ...uploadIdentityFor(media),
+      ...common,
+    })
+  } finally {
+    await media.cleanup()
+  }
+}
+
+export interface AiMediaOutcome<T> {
+  result: T
+  /** ffprobe metadata, or null when the provider fetched the media itself. */
+  metadata: MediaMetadata | null
+  source: AiMediaSource
+}
+
+/**
+ * Resolve one AI input, hand it to `use`, then clean up.
+ *
+ * Result and metadata are returned together so an operation can report what it
+ * actually knows: a direct URL has no locally probed duration.
+ */
+export async function withAiMedia<T>(
+  input: string,
+  ctx: OperationContext,
+  use: (session: AiMediaSession) => Promise<T>,
+): Promise<AiMediaOutcome<T>> {
+  const resolved = await resolveAiMedia(input, ctx)
+  try {
+    const result = await use({
+      source: resolved.source,
+      metadata: resolved.metadata,
+      path: resolved.path,
+      generate: (options) => generateFor(resolved, input, ctx, options),
+    })
+    return { result, metadata: resolved.metadata, source: resolved.source }
+  } finally {
+    await resolved.cleanup()
+    // Persisted references are written asynchronously; make them survive a
+    // process that exits as soon as this call returns.
+    await getGeminiService(ctx).flushStore()
   }
 }
 

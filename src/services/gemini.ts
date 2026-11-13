@@ -5,6 +5,7 @@ import { requireGeminiApiKey } from '../config.js'
 import { clampTimerMs, isAbortError, runWithBounds } from '../utils/abort.js'
 import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 import type { Logger } from '../utils/logger.js'
+import type { UploadReferenceStore } from './uploadCache.js'
 
 /**
  * Thin wrapper over the Google GenAI SDK.
@@ -23,7 +24,11 @@ export interface GeminiFileHandle {
 
 export type GeminiPart =
   | { kind: 'text'; text: string }
-  | { kind: 'file'; fileUri: string; mimeType: string }
+  /**
+   * A file reference. `mimeType` is omitted for a YouTube page URL, which the
+   * provider resolves itself and rejects when given a MIME type.
+   */
+  | { kind: 'file'; fileUri: string; mimeType?: string }
   | { kind: 'inlineImage'; data: string; mimeType: string }
 
 /** Cancellation and deadline applied to a single Gemini network call. */
@@ -190,7 +195,12 @@ export class GoogleGenAiApi implements GeminiApi {
     const parts = params.parts.map((part) => {
       if (part.kind === 'text') return { text: part.text }
       if (part.kind === 'file') {
-        return { fileData: { fileUri: part.fileUri, mimeType: part.mimeType } }
+        return {
+          fileData: {
+            fileUri: part.fileUri,
+            ...(part.mimeType ? { mimeType: part.mimeType } : {}),
+          },
+        }
       }
       return { inlineData: { data: part.data, mimeType: part.mimeType } }
     })
@@ -258,6 +268,8 @@ export interface GeminiServiceOptions {
   /** Injectable clock for tests. */
   now?: () => number
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  /** Optional on-disk reference cache shared with other processes. */
+  store?: UploadReferenceStore
 }
 
 export interface EnsureUploadedParams {
@@ -319,12 +331,14 @@ export class GeminiMediaService {
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>
   private readonly cache = new Map<string, CachedUpload>()
   private readonly inFlight = new Map<string, InFlightUpload>()
+  private readonly store: UploadReferenceStore | undefined
 
   constructor(options: GeminiServiceOptions) {
     this.config = options.config
     this.logger = options.logger
     this.api = options.api ?? createGeminiApi(options.config)
     this.cacheSize = options.cacheSize ?? 32
+    this.store = options.store
     this.now = options.now ?? (() => Date.now())
     this.sleep =
       options.sleep ??
@@ -371,6 +385,13 @@ export class GeminiMediaService {
       this.cache.delete(key)
     }
 
+    const persisted = await this.readPersisted(key, signal)
+    if (persisted) {
+      params.onProgress?.('Reusing a previously uploaded Gemini file.')
+      this.touch(key, { handle: persisted.handle, expiresAtMs: persisted.expiresAtMs })
+      return persisted.handle
+    }
+
     let entry = this.inFlight.get(key)
     if (entry) {
       params.onProgress?.('Waiting for an in-flight upload of the same file.')
@@ -401,6 +422,37 @@ export class GeminiMediaService {
         entry.controller.abort()
       }
     }
+  }
+
+  /**
+   * Reuse a reference that survived this process.
+   *
+   * The stored file name is only a hint: the provider is asked for the file and
+   * anything other than an `ACTIVE` file of the expected type is a miss. A
+   * timeout or cancellation is rethrown rather than turned into a miss, because
+   * re-uploading would spend the budget again and hide the stall.
+   */
+  private async readPersisted(
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<{ handle: GeminiFileHandle; expiresAtMs: number } | null> {
+    if (!this.store) return null
+    await this.store.ready
+    const entry = this.store.get(key)
+    if (!entry) return null
+
+    const active = await this.checkActive(entry.fileName, signal)
+    if (active && active.mimeType === entry.mimeType) {
+      return { handle: active, expiresAtMs: entry.expiresAtMs }
+    }
+
+    if (active) {
+      this.logger.debug(
+        `Discarding cached upload ${entry.fileName}: MIME type ${active.mimeType} does not match ${entry.mimeType}.`,
+      )
+    }
+    this.store.delete(key)
+    return null
   }
 
   private touch(key: string, entry: CachedUpload): void {
@@ -474,11 +526,14 @@ export class GeminiMediaService {
       : this.now() + DEFAULT_CACHE_EXPIRY_MS
 
     if (key) {
-      this.touch(key, {
-        handle: active,
-        expiresAtMs: Number.isFinite(expiresAtMs)
-          ? expiresAtMs
-          : this.now() + DEFAULT_CACHE_EXPIRY_MS,
+      const finalExpiry = Number.isFinite(expiresAtMs)
+        ? expiresAtMs
+        : this.now() + DEFAULT_CACHE_EXPIRY_MS
+      this.touch(key, { handle: active, expiresAtMs: finalExpiry })
+      this.store?.set(key, {
+        fileName: active.name,
+        mimeType: active.mimeType,
+        expiresAtMs: finalExpiry,
       })
     }
 
@@ -555,6 +610,39 @@ export class GeminiMediaService {
     return this.generate({
       parts: [
         { kind: 'file', fileUri: handle.uri, mimeType: handle.mimeType },
+        { kind: 'text', text: params.prompt },
+      ],
+      ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      ...(params.signal ? { signal: params.signal } : {}),
+    })
+  }
+
+  /**
+   * Run a prompt against media the provider fetches itself.
+   *
+   * Nothing is uploaded, so there is no file handle and no cache entry. The MIME
+   * type is omitted for a YouTube page URL; Google resolves the page and rejects
+   * a MIME type on that form.
+   */
+  async generateWithUrl(
+    params: {
+      url: string
+      mimeType?: string
+      prompt: string
+      systemInstruction?: string
+      temperature?: number
+      signal?: AbortSignal
+    } & Pick<EnsureUploadedParams, 'onProgress'>,
+  ): Promise<string> {
+    params.onProgress?.('Asking Gemini to fetch the media directly…')
+    return this.generate({
+      parts: [
+        {
+          kind: 'file',
+          fileUri: params.url,
+          ...(params.mimeType ? { mimeType: params.mimeType } : {}),
+        },
         { kind: 'text', text: params.prompt },
       ],
       ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
@@ -669,5 +757,16 @@ export class GeminiMediaService {
   clearCache(): void {
     this.cache.clear()
     this.inFlight.clear()
+  }
+
+  /**
+   * Wait for pending reference writes.
+   *
+   * A CLI process exits as soon as its event loop drains, so an operation that
+   * published a reference flushes it before returning instead of relying on
+   * the timer-ordered write to finish.
+   */
+  async flushStore(): Promise<void> {
+    await this.store?.flush()
   }
 }

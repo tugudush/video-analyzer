@@ -275,6 +275,13 @@ video-analyzer analyze_video --input \
   '{"videoPath":"https://www.youtube.com/watch?v=JAGPK-UCp60","question":"What is the main argument?"}'
 ```
 
+For AI operations the tool first asks whether Gemini can fetch the media itself.
+A public YouTube URL, and a public direct media URL of at most 15 MB, are passed
+to Gemini without any local download or upload. Private, unlisted, or otherwise
+unusable YouTube URLs, larger or unknown-size files, and every other remote page
+are downloaded first with `yt-dlp` and then uploaded. `get_video_info` and
+`extract_frames` need a local file, so they download a page URL regardless.
+
 Local files and direct media URLs never involve yt-dlp. Platform page URLs do, so
 `yt-dlp` is required for them: without it the call fails with `DEPENDENCY_MISSING`
 and an install hint instead of a vague rejection.
@@ -415,6 +422,7 @@ exit.
 | `VIDEO_ANALYZER_POLL_INTERVAL_MS`    | `2000`               | Upload status poll interval                                                                                                |
 | `VIDEO_ANALYZER_OUTPUT_DIR`          | cwd                  | Base directory for generated artifacts                                                                                     |
 | `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false`              | Allow private/loopback media hosts                                                                                         |
+| `VIDEO_ANALYZER_CACHE_DIR`           | —                    | Opt-in directory for the persistent Gemini upload-reference cache; environment only                                        |
 | `VIDEO_ANALYZER_LOG_LEVEL`           | `warn`               | `silent`/`error`/`warn`/`info`/`debug`                                                                                     |
 | `VIDEO_ANALYZER_CLI_PATH`            | auto                 | CLI path used by the Skill launcher. Environment only: the launcher reads the process environment and never a `.env` file. |
 | `FFMPEG_PATH` / `FFPROBE_PATH`       | `ffmpeg` / `ffprobe` | Binaries                                                                                                                   |
@@ -423,7 +431,7 @@ The `YT_DLP_*` settings drive platform downloads and are documented with their d
 
 The three millisecond settings are capped at `2147483647` (2^31 - 1), the largest delay Node's timers accept; a larger value is rejected as `INVALID_INPUT` rather than silently firing the deadline after one millisecond.
 
-A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, `VIDEO_ANALYZER_CLI_PATH`, and the `YT_DLP_*` settings are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries or credentials that run, or turn off the private-host guard.
+A `.env` file in the working directory may only set `GEMINI_API_KEY`, `GEMINI_MODEL`, and the `VIDEO_ANALYZER_*` settings above. `FFMPEG_PATH`, `FFPROBE_PATH`, `PATH`, `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS`, `VIDEO_ANALYZER_CACHE_DIR`, `VIDEO_ANALYZER_CLI_PATH`, and the `YT_DLP_*` settings are deliberately rejected there: the file travels with a repository, and a repository must not be able to choose the binaries or credentials that run, turn off the private-host guard, or redirect retained metadata into a directory it controls.
 
 When `loadConfig()` is called without an explicit environment object — as the CLI and MCP entry points do — a `.env` file is applied into `process.env` (real variables win), so the parsed settings and the process environment stay in sync. Embedders that read configuration without touching global process state should pass their own environment object, as the tests do.
 
@@ -447,7 +455,8 @@ Recovery guidance: [`skills/video-analyzer/references/troubleshooting.md`](skill
 - **Transcription is plain text.** No speaker diarization and no per-cue timings; `.srt`/`.vtt` targets are rejected rather than fabricated.
 - **Sensitive media leaves the machine** for AI operations.
 - **Gemini retains uploads.** The [Gemini Files API](https://aistudio.google.com/docs/file-input-methods) documents 48-hour storage for uploaded files. This tool does not delete them remotely; use the [Files API](https://aistudio.google.com/api-reference/files) to list or delete them sooner. Deleting a reused upload makes the next request upload it again.
-- **Local AI inputs are uploaded each time.** Mutable local files are not cached or coalesced; identical direct downloads can reuse an upload based on their content.
+- **Local AI inputs are snapshotted and content-cached.** Each AI call copies the file into an owned temporary snapshot and hashes it, so changed bytes are never mistaken for an unchanged file. Unchanged content reuses a valid upload within the process, and across processes when `VIDEO_ANALYZER_CACHE_DIR` is set. That cache stores only a Gemini file name, MIME type, and expiry — no media, prompts, or credentials — and the caller's file is never modified or deleted.
+- **Direct Gemini inputs have no local metadata.** For a YouTube URL or a small direct URL, `data.durationSeconds` is `null` and a warning says metadata-based checks were skipped. Container details require media the tool downloads or reads locally.
 - **MCP inlines extracted frames.** `extract_frames` embeds JPEGs up to a 2 MiB base64 budget per call; frames that do not fit, including the first, are reported by path instead. Each inlined image is preceded by its path and label. The CLI returns paths only. Frames are capped at a 1280-pixel longest edge without upscaling.
 - **SSRF protection is defense in depth.** Each HTTP redirect is resolved and validated separately, and connections use the validated addresses while preserving the original hostname for TLS. Private hosts are blocked unless explicitly opted in; do not treat media parsing or this filter as a complete sandbox.
 - **Platform downloads use an external downloader.** Page URLs are fetched by `yt-dlp`, which reaches the platform's own endpoints after the tool's SSRF guard has validated only the URL passed in. Playlists are truncated to the first item, `yt-dlp` config files are ignored, and the download is capped by `YT_DLP_MAX_RESOLUTION` and `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`. URLs with embedded credentials remain blocked.

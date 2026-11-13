@@ -43,6 +43,11 @@ export interface Config {
   logLevel: LogLevel
   /** Directory for files the caller asked us to keep. Defaults to the cwd. */
   outputDir: string | undefined
+  /**
+   * Directory for the persistent Gemini upload-reference cache. Undefined keeps
+   * reuse in memory only, which is the default.
+   */
+  cacheDir: string | undefined
 }
 
 const DEFAULTS = {
@@ -210,6 +215,9 @@ export function loadConfig(
     allowPrivateHosts: readBool(env, 'VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS', false),
     logLevel,
     outputDir: readString(env, 'VIDEO_ANALYZER_OUTPUT_DIR'),
+    // Real environment only: a repository `.env` must not be able to redirect
+    // retained metadata into a directory it controls (see DOTENV_KEYS).
+    cacheDir: readString(env, 'VIDEO_ANALYZER_CACHE_DIR'),
   }
 }
 

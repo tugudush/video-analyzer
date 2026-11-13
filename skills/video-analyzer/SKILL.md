@@ -27,7 +27,7 @@ Do **not** use it for:
 
 ## Before You Start
 
-1. Confirm the user gave a usable input: a path, `file://` URI, direct `http(s)` media URL, or a platform page URL (YouTube, Vimeo, …). Page URLs are downloaded automatically with `yt-dlp`, which must be installed for them; a missing binary is reported as `DEPENDENCY_MISSING` with an install hint. Download failures and the `YT_DLP_*` settings are covered in the repository README, "Getting Media from a Platform"; see also [troubleshooting.md](./references/troubleshooting.md).
+1. Confirm the user gave a usable input: a path, `file://` URI, direct `http(s)` media URL, or a platform page URL (YouTube, Vimeo, …). For AI operations a public YouTube URL and a public direct media URL of at most 15 MB go straight to Gemini; everything else is downloaded with `yt-dlp`, which must be installed for those inputs. A missing binary is reported as `DEPENDENCY_MISSING` with an install hint. Download failures and the `YT_DLP_*` settings are covered in the repository README, "Getting Media from a Platform"; see also [troubleshooting.md](./references/troubleshooting.md).
 2. AI operations need `GEMINI_API_KEY`. Local operations (`get_video_info`, `extract_frames`) work without it.
 3. `ffmpeg`/`ffprobe` must be installed.
 
