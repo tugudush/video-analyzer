@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process'
+import { execFile, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import type { Config } from '../config.js'
 import { clampTimerMs, isAbortError } from '../utils/abort.js'
 import {
@@ -13,12 +12,14 @@ import {
   operationCancelled,
 } from '../utils/errors.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
+import { redactUrlsInText } from '../utils/net.js'
 import { startEgressGuard, type EgressGuard } from './egressGuard.js'
-
-const execFileAsync = promisify(execFile)
 
 /** Download budgets are never shorter than this; platform extraction is slow. */
 const MIN_TIMEOUT_MS = 60_000
+
+/** How often the running download's disk footprint is re-measured. */
+export const DOWNLOAD_SIZE_POLL_MS = 100
 
 /** Fixed stem so a finished download is unambiguous inside its temp directory. */
 export const OUTPUT_STEM = 'platform-source'
@@ -129,7 +130,9 @@ function stderrTail(stderr: string): string | undefined {
     .filter((line) => line.length > 0 && !line.startsWith('WARNING'))
     .slice(-4)
     .join('\n')
-  return tail || undefined
+  // yt-dlp quotes the input URL, which can carry a signature in its query
+  // string. Everything derived from this text is published to the caller.
+  return tail ? redactUrlsInText(tail) : undefined
 }
 
 function classifyFailure(stderr: string, maxResolution: number): VideoAnalyzerError {
@@ -267,6 +270,66 @@ function blockedDestinationError(blocked: string[]): VideoAnalyzerError {
   )
 }
 
+/** Total size of the regular files a running download has written so far. */
+async function measureDownloadBytes(dir: string): Promise<number> {
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let total = 0
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const info = await stat(path.join(dir, entry.name)).catch(() => undefined)
+    if (info) total += info.size
+  }
+  return total
+}
+
+/**
+ * Watch a download's disk footprint while yt-dlp runs.
+ *
+ * `--max-filesize` is only applied when the platform declares a size, so an
+ * unknown-length transfer could otherwise fill the disk before the
+ * post-download check runs. Every file in the per-request directory counts,
+ * including fragments and the separate audio/video streams.
+ */
+function watchDownloadSize(
+  dir: string,
+  maxBytes: number,
+  onExceeded: (observedBytes: number) => void,
+): () => void {
+  let stopped = false
+  const timer = setInterval(() => {
+    void measureDownloadBytes(dir)
+      .then((bytes) => {
+        if (stopped || bytes <= maxBytes) return 0
+        stopped = true
+        clearInterval(timer)
+        onExceeded(bytes)
+        return bytes
+      })
+      .catch(() => undefined)
+  }, DOWNLOAD_SIZE_POLL_MS)
+  timer.unref()
+  return () => {
+    stopped = true
+    clearInterval(timer)
+  }
+}
+
+function sizeExceededWhileRunning(maxBytes: number, observedBytes: number): VideoAnalyzerError {
+  return new VideoAnalyzerError(
+    'DOWNLOAD_FAILED',
+    'The platform download exceeded the size limit and was stopped.',
+    {
+      hint: 'Raise VIDEO_ANALYZER_DOWNLOAD_MAX_MB, or lower YT_DLP_MAX_RESOLUTION.',
+      details: { maxBytes, observedBytes },
+    },
+  )
+}
+
 async function downloadThroughGuard(
   url: string,
   destDir: string,
@@ -282,16 +345,42 @@ async function downloadThroughGuard(
   opts.onProgress?.('Downloading from the platform with yt-dlp…')
 
   let stdout = ''
+  let child: ChildProcess | undefined
+  const budget: { exceededBytes?: number } = {}
+  let stopWatch: (() => void) | undefined
+
   try {
-    const result = await execFileAsync(binary, args, {
-      timeout: timeoutMs,
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
-      cwd: destDir,
-      ...(opts.signal ? { signal: opts.signal } : {}),
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      stopWatch = watchDownloadSize(destDir, config.downloadMaxBytes, (observedBytes) => {
+        budget.exceededBytes = observedBytes
+        child?.kill()
+      })
+      child = execFile(
+        binary,
+        args,
+        {
+          timeout: timeoutMs,
+          maxBuffer: 16 * 1024 * 1024,
+          windowsHide: true,
+          cwd: destDir,
+          ...(opts.signal ? { signal: opts.signal } : {}),
+        },
+        (error, childStdout, childStderr) => {
+          if (error) {
+            // Classification below reads the same fields Node attaches to a
+            // failed `execFile`, so callers need no special case.
+            reject(Object.assign(error, { stdout: childStdout, stderr: childStderr }))
+            return
+          }
+          resolve({ stdout: childStdout, stderr: childStderr })
+        },
+      )
     })
     stdout = result.stdout
   } catch (error) {
+    const observed = budget.exceededBytes
+    if (observed !== undefined) throw sizeExceededWhileRunning(config.downloadMaxBytes, observed)
+
     if (opts.signal?.aborted || isAbortError(error)) throw operationCancelled({ cause: error })
 
     const code = (error as NodeJS.ErrnoException).code
@@ -323,6 +412,8 @@ async function downloadThroughGuard(
     const stderr = (error as { stderr?: string }).stderr ?? ''
     if (guard.blocked.length > 0) throw blockedDestinationError(guard.blocked)
     throw classifyFailure(stderr, config.ytdlpMaxResolution)
+  } finally {
+    stopWatch?.()
   }
 
   const produced = await findOutput(destDir)

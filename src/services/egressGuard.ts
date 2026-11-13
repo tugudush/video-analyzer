@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { connect } from 'node:net'
 import { Readable, type Duplex } from 'node:stream'
-import { fetchPinned, resolveSafeHttpUrl } from '../utils/net.js'
+import { fetchPinned, redactUrlsInText, resolveSafeHttpUrl } from '../utils/net.js'
 import type { UrlSafetyOptions } from '../utils/net.js'
 import { VideoAnalyzerError } from '../utils/errors.js'
 import { createLogger, type Logger } from '../utils/logger.js'
@@ -102,6 +102,11 @@ function authorityOf(target: string): string {
   }
 }
 
+/** `host:port` without userinfo a client may have placed in a CONNECT authority. */
+function safeAuthority(authority: string | undefined): string {
+  return (authority?.split('@').at(-1) ?? '(missing)').slice(0, 200)
+}
+
 /** Resolve a CONNECT authority (`host:port`) into a validated address and port. */
 async function validateAuthority(
   authority: string | undefined,
@@ -175,7 +180,7 @@ async function forward(
       })
       .pipe(res)
   } catch (error) {
-    logger.debug(`Egress proxy denied ${target}: ${String(error)}`)
+    logger.debug(`Egress proxy denied ${redactUrlsInText(target)}: ${String(error)}`)
     if (isPolicyBlock(error)) {
       recordBlocked(blocked, authorityOf(target))
       deny(res, 'Blocked by the video-analyzer network policy.')
@@ -199,7 +204,7 @@ function tunnel(
     try {
       target = await validateAuthority(authority, options)
     } catch (error) {
-      logger.debug(`Egress proxy refused ${authority ?? '(missing)'}: ${String(error)}`)
+      logger.debug(`Egress proxy refused ${safeAuthority(authority)}: ${String(error)}`)
       policyBlock = isPolicyBlock(error)
       if (policyBlock) recordBlocked(blocked, authorityOf(`https://${authority ?? ''}`))
     }

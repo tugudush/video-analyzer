@@ -3,7 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { assertSafeHttpUrl, downloadToFile, isPrivateAddress } from '../../src/utils/net.js'
+import {
+  assertSafeHttpUrl,
+  downloadToFile,
+  isPrivateAddress,
+  redactUrlsInText,
+} from '../../src/utils/net.js'
 import { MAX_TIMER_MS } from '../../src/utils/abort.js'
 import { toErrorEnvelope } from '../../src/utils/errors.js'
 
@@ -47,6 +52,23 @@ describe('isPrivateAddress', () => {
 
   it('fails closed on unparseable input', () => {
     expect(isPrivateAddress('not-an-ip')).toBe(true)
+  })
+})
+
+describe('redactUrlsInText', () => {
+  it('removes credentials, query strings, and fragments from embedded URLs', () => {
+    const text =
+      'ERROR: could not fetch https://user:pass@example.com/a.mp4?token=abc#frag (blocked)'
+
+    expect(redactUrlsInText(text)).toBe(
+      'ERROR: could not fetch https://example.com/a.mp4 (blocked)',
+    )
+  })
+
+  it('drops a query string yt-dlp quotes without the rest of the URL', () => {
+    expect(redactUrlsInText('ERROR: [generic] clip.mp4?X-Amz-Signature=abc: HTTP Error 403')).toBe(
+      'ERROR: [generic] clip.mp4: HTTP Error 403',
+    )
   })
 })
 

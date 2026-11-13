@@ -266,7 +266,9 @@ Full argument reference: [`skills/video-analyzer/references/operations.md`](skil
 ## Getting Media from a Platform
 
 A YouTube, Vimeo, or similar **page** URL is not a media URL: it returns HTML.
-When a remote URL answers with a document, the tool hands the final URL to
+When a remote URL answers with a document — or refuses the tool's own request
+with an authentication or rate-limit status (401, 403, 407, 429) instead of
+returning media — the tool hands the URL to
 [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and analyzes what it downloads, so the
 same call works whether you paste a page or a direct link:
 
@@ -295,8 +297,12 @@ What the tool runs, and what it deliberately does not:
   works. Every fallback keeps that cap; formats that report no height, such as
   audio-only and some adaptive streams, remain eligible.
 - Bounded by `VIDEO_ANALYZER_DOWNLOAD_MAX_MB` and by
-  `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`; a download that finishes over
-  the size limit is rejected before it reaches Gemini.
+  `max(VIDEO_ANALYZER_REQUEST_TIMEOUT_MS, 60 s)`. The limit covers the whole
+  destination directory, not just one stream, and is enforced while the download
+  runs: a transfer that reports no length is stopped within one polling interval
+  instead of filling the temporary directory before it is rejected.
+- Diagnostics derived from `yt-dlp` output have every URL reduced to its scheme,
+  host, and path, so a signed URL's query string never reaches a caller or a log.
 - `--ignore-config`, so your own `~/.config/yt-dlp/config` cannot inject options
   (including `--exec`) into a tool that only meant to download a video. Use the
   settings below instead.

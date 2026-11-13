@@ -164,6 +164,31 @@ export function redactedUrl(url: URL): string {
 }
 
 /**
+ * Redact every URL embedded in free text.
+ *
+ * Subprocess output (yt-dlp's stderr in particular) quotes the input URL, and a
+ * signed URL carries its authorization in the query string. Before such text is
+ * published as an error hint or detail, each URL is reduced to scheme, host, and
+ * path so no token, fragment, or embedded credential survives. yt-dlp sometimes
+ * quotes only the last URL component (`clip.mp4?X-Amz-Signature=…`), so any
+ * remaining `?query` is dropped as well.
+ */
+export function redactUrlsInText(text: string): string {
+  const withoutUrls = text.replace(/https?:\/\/[^\s"'<>\\]+/gi, (match) => {
+    try {
+      return redactedUrl(new URL(match))
+    } catch {
+      return match
+    }
+  })
+  return withoutUrls.replace(/[^\s"'<>\\]*\?[^\s"'<>\\]*/g, (match) => {
+    // Sentence punctuation after the URL belongs to the message, not the query.
+    const punctuation = /[.,;:)\]]+$/.exec(match)?.[0] ?? ''
+    return match.slice(0, match.indexOf('?')) + punctuation
+  })
+}
+
+/**
  * Validate that a URL is an http(s) URL pointing at a public address.
  *
  * The resolved addresses are returned so a connection can be made to exactly
@@ -524,10 +549,20 @@ export async function downloadToFile(
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined)
+      // The declared type is part of the diagnosis: a refused document may still
+      // be retrievable by the platform downloader, while a refused media stream
+      // is not.
+      const contentType = response.headers.get('content-type') ?? undefined
       throw new VideoAnalyzerError(
         'DOWNLOAD_FAILED',
         `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
-        { details: { url: redactedUrl(current), status: response.status } },
+        {
+          details: {
+            url: redactedUrl(current),
+            status: response.status,
+            ...(contentType ? { contentType } : {}),
+          },
+        },
       )
     }
 

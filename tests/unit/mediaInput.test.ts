@@ -38,7 +38,7 @@ function emulateYtDlpDownload(): void {
       const outputIndex = args.indexOf('--output')
       const template = outputIndex >= 0 ? args[outputIndex + 1] : undefined
       if (template) writeFileSync(template.replace('%(ext)s', 'mp4'), 'platform media')
-      if (typeof callback === 'function') callback(null, { stdout: '', stderr: '' })
+      if (typeof callback === 'function') callback(null, '', '')
     },
   )
 }
@@ -309,6 +309,72 @@ describe('remote media input policy', () => {
       message: expect.stringMatching(/did not return media/),
     })
     expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('hands a page that refuses an unauthenticated request to the downloader', async () => {
+    // The page itself can require a session; yt-dlp may still fetch it with the
+    // configured cookies or impersonation.
+    fetchMock.mockResolvedValue(
+      new Response('forbidden', { status: 403, headers: { 'content-type': 'text/html' } }),
+    )
+
+    const media = await resolveMediaInput('https://www.youtube.com/watch?v=example', config)
+    try {
+      expect(media.mimeType).toBe('video/mp4')
+      expect(await readFile(media.path, 'utf8')).toBe('platform media')
+    } finally {
+      await media.cleanup()
+    }
+    expect(mocks.execFile).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the HTTP error for a refused media response', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('', { status: 403, headers: { 'content-type': 'video/mp4' } }),
+    )
+
+    await expect(
+      resolveMediaInput('https://cdn.example.com/clip.mp4', config),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/HTTP 403/),
+    })
+    // Hotlink protection is not something the downloader can undo.
+    expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a plain missing page through the downloader', async () => {
+    // 404 is not something cookies or impersonation can fix.
+    fetchMock.mockResolvedValue(
+      new Response('not found', { status: 404, headers: { 'content-type': 'text/html' } }),
+    )
+
+    await expect(resolveMediaInput('https://example.com/missing', config)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/HTTP 404/),
+    })
+    expect(mocks.execFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the HTTP failure when the downloader cannot handle the page', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('', { status: 403, headers: { 'content-type': 'text/html' } }),
+    )
+    mocks.execFile.mockImplementation(
+      (_binary: string, _args: string[], _options: unknown, callback?: unknown) => {
+        if (typeof callback === 'function')
+          callback(
+            Object.assign(new Error('failed'), { code: 1 }),
+            '',
+            'ERROR: Unsupported URL: https://example.com/thing',
+          )
+      },
+    )
+
+    await expect(resolveMediaInput('https://example.com/thing', config)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/HTTP 403/),
+    })
   })
 
   it('rejects a download whose declared length exceeds the configured limit', async () => {

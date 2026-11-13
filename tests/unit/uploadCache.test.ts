@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -154,6 +154,29 @@ describe('FileUploadReferenceStore', () => {
     expect(warnings).toEqual([])
     const reloaded = await openStore(nested)
     expect(reloaded.get('content:abcd')).toBeDefined()
+  })
+
+  it('retries an update whose write failed', async () => {
+    const warnings: string[] = []
+    const store = new FileUploadReferenceStore({
+      dir,
+      scope: SCOPE,
+      logger: createLogger('warn', (_level, message) => warnings.push(message)),
+      now: () => NOW,
+    })
+    await store.ready
+    // A directory where the cache file belongs makes the final rename fail.
+    const target = path.join(dir, `uploads-${SCOPE}.json`)
+    await mkdir(target)
+
+    store.set('content:abcd', reference('files/abc'))
+    await store.flush()
+    expect(warnings).toHaveLength(1)
+
+    await rm(target, { recursive: true, force: true })
+    await store.flush()
+
+    expect((await openStore(dir)).get('content:abcd')).toBeDefined()
   })
 
   it('skips the write while a lock is held, then retries it', async () => {

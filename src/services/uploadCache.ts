@@ -256,6 +256,12 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
         await rm(staging, { force: true }).catch(() => undefined)
         throw error
       }
+    } catch (error) {
+      // The update was removed from the queue before it was durable. Put it
+      // back, ahead of anything queued meanwhile, so a later flush retries it
+      // instead of losing a reference that only the next process would notice.
+      this.pending = [...operations, ...this.pending]
+      throw error
     } finally {
       await release()
     }

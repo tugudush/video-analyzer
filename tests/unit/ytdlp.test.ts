@@ -17,18 +17,13 @@ vi.mock('node:child_process', async (importOriginal) => ({
   execFile: mocks.execFile,
 }))
 
-type ExecCallback = (error: unknown, result: { stdout: string; stderr: string }) => void
+type ExecCallback = (error: unknown, stdout: string, stderr: string) => void
 
-/** Callback-style mock, because the service reaches execFile through promisify. */
+/** Callback-style mock, because the service spawns the downloader directly. */
 function failWith(error: Record<string, unknown>, stderr = ''): void {
   mocks.execFile.mockImplementation(
     (_binary: string, _args: string[], _options: unknown, callback?: ExecCallback) => {
-      // Node attaches captured stderr to the error itself, and the service
-      // classifies failures by reading it from there.
-      callback?.(Object.assign(new Error('spawn failed'), { stderr }, error), {
-        stdout: '',
-        stderr,
-      })
+      callback?.(Object.assign(new Error('spawn failed'), error), '', stderr)
     },
   )
 }
@@ -40,7 +35,7 @@ function succeedWith(content = 'downloaded media', extension = 'mp4'): void {
       const outputIndex = args.indexOf('--output')
       const template = args[outputIndex + 1] ?? ''
       writeFileSync(template.replace('%(ext)s', extension), content)
-      callback?.(null, { stdout: '', stderr: '' })
+      callback?.(null, '', '')
     },
   )
 }
@@ -220,7 +215,7 @@ describe('downloadFromPlatform', () => {
         const outputIndex = args.indexOf('--output')
         const template = args[outputIndex + 1] ?? ''
         writeFileSync(template.replace('%(ext)s', 'mp4'), Buffer.alloc(1_500_000))
-        callback?.(null, { stdout: '', stderr: '' })
+        callback?.(null, '', '')
       },
     )
     const config = loadConfig({ VIDEO_ANALYZER_DOWNLOAD_MAX_MB: '1' })
@@ -229,6 +224,53 @@ describe('downloadFromPlatform', () => {
       code: 'DOWNLOAD_FAILED',
       message: expect.stringMatching(/exceeds the size limit/),
     })
+  })
+
+  it('stops a download that outgrows the size limit while it is running', async () => {
+    // An unknown-length transfer: `--max-filesize` cannot apply, so the running
+    // download's footprint has to be watched instead of only its final size.
+    const kill = vi.fn()
+    mocks.execFile.mockImplementation(
+      (_binary: string, args: string[], _options: unknown, callback?: ExecCallback) => {
+        const outputIndex = args.indexOf('--output')
+        const template = args[outputIndex + 1] ?? ''
+        writeFileSync(template.replace('%(ext)s', 'mp4'), Buffer.alloc(1_500_000))
+        kill.mockImplementation(() =>
+          callback?.(Object.assign(new Error('killed'), { killed: true }), '', ''),
+        )
+        return { kill }
+      },
+    )
+    const config = loadConfig({ VIDEO_ANALYZER_DOWNLOAD_MAX_MB: '1' })
+
+    await expect(downloadFromPlatform('https://example.com/v', dir, config)).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringMatching(/exceeded the size limit and was stopped/),
+    })
+    expect(kill).toHaveBeenCalled()
+  })
+
+  it('redacts signed URLs quoted in downloader output', async () => {
+    // yt-dlp quotes both the full URL and, for some extractors, only the final
+    // path component with its query string.
+    failWith(
+      { code: 1 },
+      'ERROR: [generic] a.mp4?token=super-secret: unable to download https://cdn.example.com/a.mp4?token=super-secret&expires=1',
+    )
+
+    let failure: unknown
+    try {
+      await downloadFromPlatform('https://cdn.example.com/a.mp4', dir, loadConfig({}))
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toMatchObject({ code: 'DOWNLOAD_FAILED' })
+    const { hint, details } = failure as { hint?: string; details?: { stderr?: string } }
+    const published = `${hint ?? ''}${details?.stderr ?? ''}`
+    expect(published).not.toContain('super-secret')
+    expect(published).not.toContain('expires=')
+    expect(published).toContain('https://cdn.example.com/a.mp4')
   })
 
   it('reports a timeout as a download failure, not a spawn error', async () => {
@@ -259,7 +301,7 @@ describe('downloadFromPlatform', () => {
     mocks.execFile.mockImplementation(
       (_binary: string, _args: string[], _options: unknown, callback?: ExecCallback) => {
         writeFileSync(path.join(dir, 'platform-source.mp4.part'), 'partial')
-        callback?.(null, { stdout: '', stderr: '' })
+        callback?.(null, '', '')
       },
     )
     await expect(

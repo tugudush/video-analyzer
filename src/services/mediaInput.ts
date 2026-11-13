@@ -5,8 +5,8 @@ import type { Config } from '../config.js'
 import { VideoAnalyzerError, invalidInput } from '../utils/errors.js'
 import { createTempDir, removeDir } from '../utils/fsUtils.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
-import { downloadToFile, redactedUrl } from '../utils/net.js'
-import { downloadFromPlatform } from './ytdlp.js'
+import { downloadToFile, redactedUrl, type DownloadResult } from '../utils/net.js'
+import { downloadFromPlatform, type PlatformDownload } from './ytdlp.js'
 import type { Logger } from '../utils/logger.js'
 
 export type MediaSource = 'local' | 'direct'
@@ -87,6 +87,70 @@ function resolveMimeType(filePath: string): string {
   return mimeType
 }
 
+const PAGE_CONTENT_TYPES = /^text\/html|^application\/xhtml\+xml/
+
+/** True when a declared Content-Type describes a document rather than media. */
+function isPageContentType(value: string | undefined): boolean {
+  return PAGE_CONTENT_TYPES.test(value?.split(';')[0]?.trim().toLowerCase() ?? '')
+}
+
+/**
+ * Statuses a page uses to refuse an unauthenticated client. These are the ones
+ * cookies or impersonation can turn into a success; a 404 or a 500 is not
+ * something the downloader can fix.
+ */
+const REFUSED_PAGE_STATUSES = new Set([401, 403, 407, 429])
+
+function refusedPageFailure(error: unknown): VideoAnalyzerError | undefined {
+  if (!(error instanceof VideoAnalyzerError) || error.code !== 'DOWNLOAD_FAILED') return undefined
+  const status = error.details?.['status']
+  return typeof status === 'number' && REFUSED_PAGE_STATUSES.has(status) ? error : undefined
+}
+
+function contentTypeFromError(error: VideoAnalyzerError): string | undefined {
+  const value = error.details?.['contentType']
+  return typeof value === 'string' ? value : undefined
+}
+
+/**
+ * Retry a refused page through the platform downloader.
+ *
+ * A page can answer an unauthenticated request with 401, 403, 407, or 429 while
+ * `yt-dlp`, using the configured cookies and impersonation, can still fetch it.
+ * A refused *media* response is left alone, because a downloader cannot talk a
+ * CDN out of hotlink protection.
+ */
+async function downloadPageAfterRefusal(
+  error: unknown,
+  url: string,
+  destDir: string,
+  config: Config,
+  opts: ResolveOptions,
+): Promise<PlatformDownload | undefined> {
+  const failure = refusedPageFailure(error)
+  if (!failure) return undefined
+
+  const declared = contentTypeFromError(failure)
+  const declaredMediaType = declared?.split(';')[0]?.trim().toLowerCase()
+  if (declaredMediaType && isMediaMimeType(declaredMediaType)) return undefined
+
+  try {
+    return await downloadFromPlatform(url, destDir, config, {
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    })
+  } catch (platformError) {
+    if (!(platformError instanceof VideoAnalyzerError)) throw platformError
+    // Not a page the downloader supports: the HTTP failure is the real answer.
+    if (platformError.code === 'UNSUPPORTED_INPUT') return undefined
+    // A missing downloader only explains a served document; for anything else
+    // the status the server returned is the more honest error.
+    if (platformError.code === 'DEPENDENCY_MISSING' && !isPageContentType(declared))
+      return undefined
+    throw platformError
+  }
+}
+
 async function resolveDirect(
   url: string,
   config: Config,
@@ -97,12 +161,27 @@ async function resolveDirect(
   const destination = path.join(tempDir, 'source.media')
 
   try {
-    const result = await downloadToFile(url, destination, {
-      maxBytes: config.downloadMaxBytes,
-      timeoutMs: Math.max(config.requestTimeoutMs, 60_000),
-      allowPrivateHosts: config.allowPrivateHosts,
-      signal: opts.signal,
-    })
+    let result: DownloadResult
+    try {
+      result = await downloadToFile(url, destination, {
+        maxBytes: config.downloadMaxBytes,
+        timeoutMs: Math.max(config.requestTimeoutMs, 60_000),
+        allowPrivateHosts: config.allowPrivateHosts,
+        signal: opts.signal,
+      })
+    } catch (error) {
+      // A refused page may still be fetchable by yt-dlp; a refused media stream
+      // or any other failure keeps the original error.
+      const page = await downloadPageAfterRefusal(error, url, tempDir, config, opts)
+      if (!page) throw error
+      await rm(destination, { force: true })
+      return buildResolved(
+        page.path,
+        page.mimeType,
+        page.sizeBytes,
+        `platform:${page.mimeType}:${page.sha256}`,
+      )
+    }
 
     const declared = result.contentType?.split(';')[0]?.trim().toLowerCase()
     const fromUrl = mimeTypeFromPath(new URL(result.finalUrl).pathname)
@@ -115,7 +194,7 @@ async function resolveDirect(
     // Only a document is worth handing to the downloader: an image or a JSON
     // endpoint is not a platform page, and yt-dlp would produce a worse error
     // than the one this tool can give.
-    const pageLike = /^text\/html|^application\/xhtml\+xml/.test(declared ?? '')
+    const pageLike = isPageContentType(declared)
 
     if (!returnedMedia && pageLike) {
       // A platform page (HTML, JSON, …) rather than the media itself. The user
