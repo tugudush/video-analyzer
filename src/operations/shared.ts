@@ -134,6 +134,19 @@ export function uploadIdentityFor(media: ResolvedMedia): UploadIdentity {
 export const DIRECT_MEDIA_METADATA_WARNING =
   'Gemini fetched the media directly, so duration and stream details were not read locally. Checks that need local metadata were skipped.'
 
+/**
+ * Warning attached when a download was used but `ffprobe` still could not read
+ * it: the media was local, so the provider is not the reason the metadata is
+ * missing.
+ */
+export const UNREADABLE_MEDIA_METADATA_WARNING =
+  'The downloaded media could not be read locally, so duration and stream details are unavailable. Checks that need local metadata were skipped.'
+
+/** Warning for a result whose duration and stream details are unknown. */
+export function missingMetadataWarning(source: AiMediaSource): string {
+  return source === 'gemini-url' ? DIRECT_MEDIA_METADATA_WARNING : UNREADABLE_MEDIA_METADATA_WARNING
+}
+
 export type AiMediaSource = 'local' | 'download' | 'gemini-url'
 
 export interface AiPromptOptions {
@@ -250,12 +263,19 @@ interface GeminiPromptParams {
   onProgress?: (message: string) => void
 }
 
+/** What one generation actually used, which can differ from the initial route. */
+interface GenerationOutcome {
+  text: string
+  source: AiMediaSource
+  metadata: MediaMetadata | null
+}
+
 async function generateFor(
   resolved: ResolvedAiMedia,
   input: string,
   ctx: OperationContext,
   options: AiPromptOptions,
-): Promise<string> {
+): Promise<GenerationOutcome> {
   const service = getGeminiService(ctx)
   const common: GeminiPromptParams = {
     prompt: options.prompt,
@@ -267,11 +287,12 @@ async function generateFor(
 
   if (resolved.geminiUrl) {
     try {
-      return await service.generateWithUrl({
+      const text = await service.generateWithUrl({
         url: resolved.geminiUrl,
         ...(resolved.mimeType ? { mimeType: resolved.mimeType } : {}),
         ...common,
       })
+      return { text, source: resolved.source, metadata: resolved.metadata }
     } catch (error) {
       // Only a provider rejection of the URL itself downgrades to a download;
       // quota, auth, timeout, and cancellation failures stay visible.
@@ -285,32 +306,47 @@ async function generateFor(
     throw new VideoAnalyzerError('INTERNAL', 'No media file or URL was resolved for the request.')
   }
 
-  return service.generateWithFile({
+  const text = await service.generateWithFile({
     path: resolved.path,
     mimeType: resolved.mimeType ?? 'application/octet-stream',
     ...(resolved.cacheKey ? { cacheKey: resolved.cacheKey } : {}),
     ...(resolved.retainSource ? { retainSource: resolved.retainSource } : {}),
     ...common,
   })
+  return { text, source: resolved.source, metadata: resolved.metadata }
 }
 
+/**
+ * Download after a provider rejected the URL, then describe what was used.
+ *
+ * The download is local now, so its metadata is probed for the caller; a probe
+ * failure leaves the metadata unknown instead of failing a generation that
+ * already succeeded.
+ */
 async function generateFromDownload(
   input: string,
   ctx: OperationContext,
   common: GeminiPromptParams,
-): Promise<string> {
+): Promise<GenerationOutcome> {
   const media = await resolveMediaInput(input, ctx.config, {
     logger: ctx.logger,
     ...(ctx.signal ? { signal: ctx.signal } : {}),
     ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
   })
   try {
-    return await getGeminiService(ctx).generateWithFile({
+    const metadata = await getMediaMetadata(media.path, ctx.config, ctx.signal).catch(
+      (error: unknown) => {
+        ctx.logger.debug(`Could not probe the downloaded media: ${String(error)}`)
+        return null
+      },
+    )
+    const text = await getGeminiService(ctx).generateWithFile({
       path: media.path,
       mimeType: media.mimeType,
       ...uploadIdentityFor(media),
       ...common,
     })
+    return { text, source: 'download', metadata }
   } finally {
     await media.cleanup()
   }
@@ -318,16 +354,18 @@ async function generateFromDownload(
 
 export interface AiMediaOutcome<T> {
   result: T
-  /** ffprobe metadata, or null when the provider fetched the media itself. */
+  /** ffprobe metadata, or null when it could not be read locally. */
   metadata: MediaMetadata | null
+  /** Route the successful generation used; a URL fallback reports `download`. */
   source: AiMediaSource
 }
 
 /**
  * Resolve one AI input, hand it to `use`, then clean up.
  *
- * Result and metadata are returned together so an operation can report what it
- * actually knows: a direct URL has no locally probed duration.
+ * Result, metadata, and route are returned together so an operation can report
+ * what it actually knows and did: a direct URL has no locally probed duration,
+ * and a URL the provider rejected was downloaded after all.
  */
 export async function withAiMedia<T>(
   input: string,
@@ -335,14 +373,26 @@ export async function withAiMedia<T>(
   use: (session: AiMediaSession) => Promise<T>,
 ): Promise<AiMediaOutcome<T>> {
   const resolved = await resolveAiMedia(input, ctx)
+  let source = resolved.source
+  let metadata = resolved.metadata
+
   try {
     const result = await use({
-      source: resolved.source,
-      metadata: resolved.metadata,
+      get source() {
+        return source
+      },
+      get metadata() {
+        return metadata
+      },
       path: resolved.path,
-      generate: (options) => generateFor(resolved, input, ctx, options),
+      generate: async (options) => {
+        const outcome = await generateFor(resolved, input, ctx, options)
+        source = outcome.source
+        metadata = outcome.metadata
+        return outcome.text
+      },
     })
-    return { result, metadata: resolved.metadata, source: resolved.source }
+    return { result, metadata, source }
   } finally {
     await resolved.cleanup()
     // Persisted references are written asynchronously; make them survive a

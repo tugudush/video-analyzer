@@ -13,6 +13,7 @@ import {
   operationCancelled,
 } from '../utils/errors.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
+import { startEgressGuard, type EgressGuard } from './egressGuard.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -48,10 +49,14 @@ export interface PlatformDownloadOptions {
  * Gemini and FFmpeg both decode AV1 and VP9, but the H.264 chain is the safest
  * common denominator for containers handed to other tools, and it is what the
  * platform serves most widely. Each alternative is a fallback, so a site that
- * only offers VP9/AV1 still downloads.
+ * only offers VP9/AV1 still downloads. Every alternative keeps the height cap:
+ * accepting a known over-cap stream as a last resort would defeat
+ * `YT_DLP_MAX_RESOLUTION`. The `<=?` form also matches formats that report no
+ * height, such as audio-only and some adaptive streams, which a plain `<=`
+ * would silently exclude.
  */
 export function buildFormatSelector(maxHeight: number): string {
-  const cap = `[height<=${maxHeight}]`
+  const cap = `[height<=?${maxHeight}]`
   return [
     `bestvideo${cap}[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]`,
     `bestvideo${cap}[vcodec^=avc]+bestaudio[ext=m4a]`,
@@ -59,8 +64,6 @@ export function buildFormatSelector(maxHeight: number): string {
     `bestvideo${cap}+bestaudio`,
     `best${cap}[ext=mp4]`,
     `best${cap}`,
-    'best[ext=mp4]',
-    'best',
   ].join('/')
 }
 
@@ -68,6 +71,8 @@ export interface YtDlpArgsInput {
   url: string
   config: Config
   outputTemplate: string
+  /** Proxy that enforces the tool's destination policy for yt-dlp's own requests. */
+  proxyUrl?: string
 }
 
 /**
@@ -77,7 +82,12 @@ export interface YtDlpArgsInput {
  * such as `--exec`, which would run arbitrary commands on behalf of a tool that
  * only meant to download a video. Settings arrive through `YT_DLP_*` instead.
  */
-export function buildYtDlpArgs({ url, config, outputTemplate }: YtDlpArgsInput): string[] {
+export function buildYtDlpArgs({
+  url,
+  config,
+  outputTemplate,
+  proxyUrl,
+}: YtDlpArgsInput): string[] {
   const args = [
     '--ignore-config',
     '--no-playlist',
@@ -106,6 +116,7 @@ export function buildYtDlpArgs({ url, config, outputTemplate }: YtDlpArgsInput):
 
   if (config.ytdlpCookiesFile) args.push('--cookies', config.ytdlpCookiesFile)
   if (config.ytdlpImpersonate) args.push('--impersonate', config.ytdlpImpersonate)
+  if (proxyUrl) args.push('--proxy', proxyUrl)
 
   args.push('--', url)
   return args
@@ -207,8 +218,10 @@ async function findOutput(destDir: string): Promise<string | undefined> {
  *
  * The download lands in `destDir`, which the caller owns (a per-request temp
  * directory), so a failure never leaves partial output behind for the next run.
- * yt-dlp performs its own network access; the caller's SSRF guard covers the URL
- * it fetches, not the destinations yt-dlp derives from the page.
+ * yt-dlp performs its own network access, so its traffic is routed through a
+ * loopback proxy that applies the tool's destination policy to every request —
+ * including media hosts the page points at, which the caller's URL check never
+ * sees.
  */
 export async function downloadFromPlatform(
   url: string,
@@ -226,9 +239,44 @@ export async function downloadFromPlatform(
     }
   }
 
+  const guard = await startEgressGuard({ allowPrivateHosts: config.allowPrivateHosts }).catch(
+    (error: unknown) => {
+      throw new VideoAnalyzerError(
+        'DOWNLOAD_FAILED',
+        'Could not start the network guard for yt-dlp.',
+        { cause: error },
+      )
+    },
+  )
+
+  try {
+    return await downloadThroughGuard(url, destDir, config, guard, opts)
+  } finally {
+    await guard.close()
+  }
+}
+
+function blockedDestinationError(blocked: string[]): VideoAnalyzerError {
+  return new VideoAnalyzerError(
+    'DOWNLOAD_FAILED',
+    'The page pointed yt-dlp at a private or reserved destination, which was blocked.',
+    {
+      hint: 'Set VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true only if you trust the page and the media it points at.',
+      details: { blocked },
+    },
+  )
+}
+
+async function downloadThroughGuard(
+  url: string,
+  destDir: string,
+  config: Config,
+  guard: EgressGuard,
+  opts: PlatformDownloadOptions,
+): Promise<PlatformDownload> {
   const binary = config.ytdlpPath ?? 'yt-dlp'
   const outputTemplate = path.join(destDir, `${OUTPUT_STEM}.%(ext)s`)
-  const args = buildYtDlpArgs({ url, config, outputTemplate })
+  const args = buildYtDlpArgs({ url, config, outputTemplate, proxyUrl: guard.url })
   const timeoutMs = clampTimerMs(Math.max(config.requestTimeoutMs, MIN_TIMEOUT_MS))
 
   opts.onProgress?.('Downloading from the platform with yt-dlp…')
@@ -273,11 +321,13 @@ export async function downloadFromPlatform(
     }
 
     const stderr = (error as { stderr?: string }).stderr ?? ''
+    if (guard.blocked.length > 0) throw blockedDestinationError(guard.blocked)
     throw classifyFailure(stderr, config.ytdlpMaxResolution)
   }
 
   const produced = await findOutput(destDir)
   if (!produced) {
+    if (guard.blocked.length > 0) throw blockedDestinationError(guard.blocked)
     throw new VideoAnalyzerError('DOWNLOAD_FAILED', 'yt-dlp finished but produced no media file.', {
       hint: stderrTail(stdout) ?? 'Run yt-dlp on the same URL to see why nothing was written.',
     })

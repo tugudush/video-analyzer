@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
-  DIRECT_MEDIA_METADATA_WARNING,
   TIMESTAMP_ESTIMATE_WARNING,
   assertGeminiAvailable,
   formatTimestamp,
+  missingMetadataWarning,
   withAiMedia,
 } from './shared.js'
 import type { Operation } from './types.js'
@@ -92,7 +92,11 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
   async run(input, ctx) {
     assertGeminiAvailable(ctx)
 
-    const { result: response, metadata } = await withAiMedia(input.videoPath, ctx, (media) =>
+    const {
+      result: response,
+      metadata,
+      source,
+    } = await withAiMedia(input.videoPath, ctx, (media) =>
       media.generate({
         prompt: SEARCH_PROMPT(input.query),
         systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
@@ -103,7 +107,7 @@ export const searchTimestampOperation: Operation<typeof searchTimestampInput> = 
     const matches = parseTimestampMatches(response)
     const durationSeconds = metadata?.durationSeconds ?? null
     const warnings: string[] = [TIMESTAMP_ESTIMATE_WARNING]
-    if (durationSeconds === null) warnings.push(DIRECT_MEDIA_METADATA_WARNING)
+    if (durationSeconds === null) warnings.push(missingMetadataWarning(source))
 
     if (isNoMatch(response)) {
       return {

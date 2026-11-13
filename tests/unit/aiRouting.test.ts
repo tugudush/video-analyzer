@@ -1,3 +1,4 @@
+import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -7,6 +8,7 @@ import { analyzeVideoOperation } from '../../src/operations/analyzeVideo.js'
 import { searchTimestampOperation } from '../../src/operations/searchTimestamp.js'
 import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
 import { FileUploadReferenceStore, credentialScope } from '../../src/services/uploadCache.js'
+import { VideoAnalyzerError } from '../../src/utils/errors.js'
 import { createLogger } from '../../src/utils/logger.js'
 import type { OperationContext } from '../../src/operations/types.js'
 
@@ -181,5 +183,104 @@ describe('cross-process upload reuse', () => {
     const second = contextWithStore()
     await analyzeVideoOperation.run({ videoPath: sourcePath, question: 'second' }, second.ctx)
     expect(second.uploadFile).not.toHaveBeenCalled()
+  })
+})
+
+function fallbackProvider(generateContent: () => Promise<string>): {
+  ctx: OperationContext
+  uploadFile: ReturnType<typeof vi.fn>
+} {
+  const handle = {
+    name: 'files/abc',
+    uri: 'https://generativelanguage.test/v1beta/files/abc',
+    mimeType: 'video/mp4',
+    state: 'ACTIVE',
+  }
+  const uploadFile = vi.fn(async () => handle)
+  const config = loadConfig({
+    GEMINI_API_KEY: 'test-key',
+    VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS: 'true',
+  })
+  const service = new GeminiMediaService({
+    config,
+    logger: createLogger('silent'),
+    api: {
+      uploadFile,
+      getFile: vi.fn(async () => handle),
+      generateContent: vi.fn(generateContent),
+    } as unknown as GeminiApi,
+    sleep: async () => undefined,
+  })
+  return {
+    ctx: { config, logger: createLogger('silent'), geminiService: service },
+    uploadFile,
+  }
+}
+
+describe('direct URL fallback', () => {
+  const servers: Server[] = []
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-url-fallback-'))
+  })
+
+  afterEach(async () => {
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  })
+
+  /** A public-shaped media URL: the probe and the fallback download both hit it. */
+  async function mediaUrl(): Promise<string> {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': '5' })
+      res.end(req.method === 'HEAD' ? undefined : 'media')
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (typeof address !== 'object' || address === null) throw new Error('No port')
+    return `http://127.0.0.1:${address.port}/clip.mp4`
+  }
+
+  it('reports the download route and probed metadata when the provider rejects the URL', async () => {
+    const url = await mediaUrl()
+    let calls = 0
+    const { ctx, uploadFile } = fallbackProvider(async () => {
+      calls += 1
+      if (calls === 1) {
+        throw new VideoAnalyzerError('GEMINI_REQUEST_FAILED', 'Gemini request failed.', {
+          hint: 'Check your API key, quota, and network access.',
+          cause: new Error('unable to fetch URL'),
+        })
+      }
+      return 'An answer.'
+    })
+
+    const result = await analyzeVideoOperation.run({ videoPath: url, question: 'q' }, ctx)
+
+    expect(uploadFile).toHaveBeenCalledTimes(1)
+    expect(result.summary).toBe('An answer.')
+    // The response must describe what actually happened, not the initial route.
+    expect(result.data).toMatchObject({ source: 'download', durationSeconds: 42 })
+    expect(result.warnings).toBeUndefined()
+  })
+
+  it('does not download when the provider reports a quota problem', async () => {
+    const url = await mediaUrl()
+    const { ctx, uploadFile } = fallbackProvider(async () => {
+      throw new VideoAnalyzerError('GEMINI_REQUEST_FAILED', 'Gemini request failed.', {
+        hint: 'Check your API key, quota, and network access.',
+        cause: new Error('Quota exceeded for quota metric generate_content_free_tier_requests'),
+      })
+    })
+
+    await expect(
+      analyzeVideoOperation.run({ videoPath: url, question: 'q' }, ctx),
+    ).rejects.toMatchObject({ code: 'GEMINI_REQUEST_FAILED' })
+    expect(uploadFile).not.toHaveBeenCalled()
   })
 })

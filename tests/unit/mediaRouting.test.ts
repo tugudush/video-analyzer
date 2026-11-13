@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
 import {
   GEMINI_DIRECT_URL_MAX_BYTES,
   classifyAiInput,
+  isDirectUrlRejection,
   isYouTubeUrl,
   probeDirectMediaUrl,
 } from '../../src/services/mediaRouting.js'
+import { VideoAnalyzerError } from '../../src/utils/errors.js'
 
 const network = vi.hoisted(() => ({ fetch: vi.fn() }))
+const dns = vi.hoisted(() => ({ lookup: vi.fn() }))
 
 vi.mock('undici', async (importOriginal) => {
   const actual = await importOriginal<typeof import('undici')>()
@@ -15,13 +18,12 @@ vi.mock('undici', async (importOriginal) => {
 })
 
 /**
- * The probe must never reach a real network, and host validation is exercised
- * through `assertSafeHttpUrl`, so only that boundary is stubbed here.
+ * The probe must never reach a real network. Validation and address pinning are
+ * real here; only the resolver and transport are stubbed.
  */
-vi.mock('../../src/utils/net.js', () => ({
-  assertSafeHttpUrl: vi.fn(async (raw: string) => new URL(raw)),
-  redactedUrl: (url: URL) => url.href,
-}))
+vi.mock('node:dns/promises', () => ({ lookup: dns.lookup }))
+
+const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }]
 
 interface FakeResponse {
   status: number
@@ -44,8 +46,13 @@ function response(
   }
 }
 
+beforeEach(() => {
+  dns.lookup.mockResolvedValue(PUBLIC_ADDRESS)
+})
+
 afterEach(() => {
   network.fetch.mockReset()
+  dns.lookup.mockReset()
 })
 
 describe('isYouTubeUrl', () => {
@@ -137,6 +144,73 @@ describe('probeDirectMediaUrl', () => {
   it('declines a redirect without a location', async () => {
     network.fetch.mockResolvedValueOnce(response(302, {}))
     await expect(probeDirectMediaUrl('https://cdn.test/start', loadConfig({}))).resolves.toBeNull()
+  })
+
+  it('rejects a host that resolves to a private address before contacting it', async () => {
+    dns.lookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }])
+
+    await expect(
+      probeDirectMediaUrl('https://cdn.test/clip.mp4', loadConfig({})),
+    ).rejects.toMatchObject({ code: 'URL_REJECTED' })
+    expect(network.fetch).not.toHaveBeenCalled()
+  })
+
+  it('connects through a pinned dispatcher instead of resolving again', async () => {
+    network.fetch.mockResolvedValueOnce(
+      response(200, { 'content-type': 'video/mp4', 'content-length': '1024' }),
+    )
+
+    await probeDirectMediaUrl('https://cdn.test/clip.mp4', loadConfig({}))
+
+    // The validated addresses are bound to the connection, so the transport
+    // cannot pick a different address for the same hostname.
+    expect(network.fetch.mock.calls[0]?.[1]).toMatchObject({ dispatcher: expect.anything() })
+  })
+
+  it('stops waiting when the caller cancels during DNS resolution', async () => {
+    dns.lookup.mockImplementation(() => new Promise(() => undefined))
+    const controller = new AbortController()
+
+    const pending = probeDirectMediaUrl('https://cdn.test/clip.mp4', loadConfig({}), {
+      signal: controller.signal,
+    })
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ code: 'OPERATION_CANCELLED' })
+    expect(network.fetch).not.toHaveBeenCalled()
+  })
+})
+
+/** The shape `GeminiMediaService.generate` produces for any provider failure. */
+const wrapped = (cause: string) =>
+  new VideoAnalyzerError('GEMINI_REQUEST_FAILED', 'Gemini request failed.', {
+    hint: 'Check your API key, quota, and network access.',
+    cause: new Error(cause),
+  })
+
+describe('isDirectUrlRejection', () => {
+  it.each([
+    'unable to fetch URL',
+    'URL_RETRIEVAL_STATUS_ERROR: the URL could not be retrieved',
+    'Unsupported video format',
+    'video unavailable',
+  ])('retries %s through the download path', (cause) => {
+    expect(isDirectUrlRejection(wrapped(cause))).toBe(true)
+  })
+
+  it.each(['Quota exceeded for quota metric', 'API key not valid', 'Deadline exceeded'])(
+    'keeps %s visible instead of downloading',
+    (cause) => {
+      expect(isDirectUrlRejection(wrapped(cause))).toBe(false)
+    },
+  )
+
+  it('ignores the generic recovery hint when the provider said nothing specific', () => {
+    const error = new VideoAnalyzerError('GEMINI_REQUEST_FAILED', 'Gemini request failed.', {
+      hint: 'Check your API key, quota, and network access.',
+    })
+
+    expect(isDirectUrlRejection(error)).toBe(false)
   })
 })
 

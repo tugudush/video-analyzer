@@ -46,6 +46,8 @@ export interface UploadStoreOptions {
   maxEntries?: number
   logger?: Logger
   now?: () => number
+  /** How long to wait for the cross-process write lock. */
+  lockTimeoutMs?: number
 }
 
 /**
@@ -95,6 +97,7 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
   private readonly file: string
   private readonly lockFile: string
   private readonly maxEntries: number
+  private readonly lockTimeoutMs: number
   private readonly logger: Logger
   private readonly now: () => number
   private readonly entries = new Map<string, UploadReference>()
@@ -108,6 +111,7 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
     this.file = path.join(options.dir, `uploads-${options.scope}.json`)
     this.lockFile = `${this.file}.lock`
     this.maxEntries = options.maxEntries ?? 32
+    this.lockTimeoutMs = options.lockTimeoutMs ?? LOCK_TIMEOUT_MS
     this.logger = options.logger ?? createLogger('warn')
     this.now = options.now ?? (() => Date.now())
     this.ready = this.load()
@@ -201,10 +205,25 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
 
   private async writePending(): Promise<void> {
     if (this.pending.length === 0) return
+
+    // The lock file lives inside `dir`, so the directory has to exist before the
+    // first lock attempt; otherwise a first write fails to lock and is lost.
+    try {
+      await mkdir(this.dir, { recursive: true, mode: 0o700 })
+    } catch (error) {
+      this.warnOnce(`Could not create the Gemini upload cache directory: ${String(error)}`)
+      return
+    }
+
+    // A write that cannot own the lock must not happen at all: merging without
+    // it is what loses another process's entries. The operations stay queued, so
+    // a later `flush()` retries them.
+    const release = await this.acquireLock()
+    if (!release) return
+
     const operations = this.pending
     this.pending = []
 
-    const release = await this.acquireLock()
     try {
       const merged = await this.readForMerge()
       const now = this.now()
@@ -225,7 +244,6 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
       this.entries.clear()
       for (const [key, entry] of kept) this.entries.set(key, entry)
 
-      await mkdir(this.dir, { recursive: true, mode: 0o700 })
       const payload: PersistedFile = {
         version: SCHEMA_VERSION,
         entries: Object.fromEntries(kept),
@@ -260,8 +278,15 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
     return merged
   }
 
-  private async acquireLock(): Promise<() => Promise<void>> {
-    const deadline = Date.now() + LOCK_TIMEOUT_MS
+  /**
+   * Take the cross-process write lock.
+   *
+   * Returns `undefined` when the lock could not be taken, so the caller can skip
+   * the write instead of merging without protection and losing another
+   * process's entries.
+   */
+  private async acquireLock(): Promise<(() => Promise<void>) | undefined> {
+    const deadline = Date.now() + this.lockTimeoutMs
     for (;;) {
       try {
         const handle = await open(this.lockFile, 'wx', 0o600)
@@ -272,12 +297,12 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
           this.warnOnce(`Could not lock the upload cache: ${String(error)}`)
-          return async () => undefined
+          return undefined
         }
         await this.dropStaleLock()
         if (Date.now() >= deadline) {
           this.warnOnce('The upload cache is locked by another process; skipping this write.')
-          return async () => undefined
+          return undefined
         }
         await new Promise((resolve) => setTimeout(resolve, 10))
       }

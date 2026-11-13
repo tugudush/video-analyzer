@@ -62,13 +62,14 @@ platform, so the fix is on the `yt-dlp` side. A `GEMINI_REQUEST_FAILED` that
 names a URL or unsupported video means the direct route was refused and the tool
 fell back to `yt-dlp`; the download then failed for one of the reasons below.
 
-| Message                                       | Fix                                                                                     |
-| --------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `yt-dlp is required ... not found on PATH`    | Install yt-dlp, or set `YT_DLP_PATH`.                                                   |
-| `The platform requires a signed-in session`   | Set `YT_DLP_COOKIES_FILE` to a Netscape cookies file exported from a signed-in browser. |
-| `HTTP 403` / `The platform refused the media` | Set `YT_DLP_IMPERSONATE=chrome`, then cookies if it still fails.                        |
-| `No stream matches the requested format`      | Raise `YT_DLP_MAX_RESOLUTION` (default 720).                                            |
-| `yt-dlp cannot impersonate that browser`      | Install `yt-dlp[default]`, or unset `YT_DLP_IMPERSONATE`.                               |
+| Message                                       | Fix                                                                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `yt-dlp is required ... not found on PATH`    | Install yt-dlp, or set `YT_DLP_PATH`.                                                                     |
+| `The platform requires a signed-in session`   | Set `YT_DLP_COOKIES_FILE` to a Netscape cookies file exported from a signed-in browser.                   |
+| `HTTP 403` / `The platform refused the media` | Set `YT_DLP_IMPERSONATE=chrome`, then cookies if it still fails.                                          |
+| `No stream matches the requested format`      | Raise `YT_DLP_MAX_RESOLUTION` (default 720).                                                              |
+| `pointed yt-dlp at a private ... destination` | The page points at a private address; set `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true` only if you trust it. |
+| `yt-dlp cannot impersonate that browser`      | Install `yt-dlp[default]`, or unset `YT_DLP_IMPERSONATE`.                                                 |
 
 The tool already retries YouTube with a second player client, which clears most
 403s without configuration. All four `YT_DLP_*` settings are environment-only; a
@@ -94,7 +95,8 @@ export VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true
 ```
 
 Only do this deliberately. Never enable it because a remote URL "seemed fine".
-The opt-in does not allow embedded credentials or enable yt-dlp.
+The opt-in does not allow embedded credentials. It applies to every request the
+tool makes, including the loopback guard that carries `yt-dlp` traffic.
 
 ## DOWNLOAD_FAILED
 

@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
-  DIRECT_MEDIA_METADATA_WARNING,
   TIMESTAMP_ESTIMATE_WARNING,
   assertGeminiAvailable,
+  missingMetadataWarning,
   withAiMedia,
 } from './shared.js'
 import type { Operation } from './types.js'
@@ -59,7 +59,7 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
         source,
         ...(input.focus ? { focus: input.focus } : {}),
       },
-      warnings: [TIMESTAMP_ESTIMATE_WARNING, ...(metadata ? [] : [DIRECT_MEDIA_METADATA_WARNING])],
+      warnings: [TIMESTAMP_ESTIMATE_WARNING, ...(metadata ? [] : [missingMetadataWarning(source)])],
     }
   },
 }

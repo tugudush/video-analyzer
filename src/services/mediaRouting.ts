@@ -1,8 +1,7 @@
-import { fetch } from 'undici'
 import type { Config } from '../config.js'
 import { VideoAnalyzerError, operationCancelled } from '../utils/errors.js'
 import { isMediaMimeType, mimeTypeFromPath } from '../utils/mime.js'
-import { assertSafeHttpUrl } from '../utils/net.js'
+import { fetchPinned } from '../utils/net.js'
 
 /**
  * Decide how an AI operation should hand remote media to Gemini.
@@ -15,7 +14,6 @@ import { assertSafeHttpUrl } from '../utils/net.js'
 /** Google documents 15 MB per file for externally fetched media. */
 export const GEMINI_DIRECT_URL_MAX_BYTES = 15_000_000
 
-const MAX_PROBE_REDIRECTS = 5
 const PROBE_TIMEOUT_MS = 30_000
 
 /**
@@ -69,35 +67,25 @@ export async function probeDirectMediaUrl(
 ): Promise<DirectMediaProbe | null> {
   const timeout = AbortSignal.timeout(Math.min(PROBE_TIMEOUT_MS, config.requestTimeoutMs))
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
-  let current = input.trim()
 
   try {
-    for (let hop = 0; hop <= MAX_PROBE_REDIRECTS; hop++) {
-      const url = await assertSafeHttpUrl(current, {
-        allowPrivateHosts: config.allowPrivateHosts,
-      })
+    // `fetchPinned` validates every hop, connects only to addresses it already
+    // checked, and bounds DNS resolution with the same signal, so a probe cannot
+    // outlive the caller or be redirected onto a private address.
+    // Only metadata is needed: a HEAD keeps the probe cheap and never streams
+    // the body that Gemini would fetch itself.
+    const { response, finalUrl, tooManyRedirects, close } = await fetchPinned(input.trim(), {
+      method: 'HEAD',
+      headers: { 'user-agent': 'video-analyzer' },
+      allowPrivateHosts: config.allowPrivateHosts,
+      signal,
+    })
 
-      // Only metadata is needed: a HEAD keeps the probe cheap and never streams
-      // the body that Gemini would fetch itself.
-      const response = await fetch(url.href, {
-        method: 'HEAD',
-        redirect: 'manual',
-        signal,
-        headers: { 'user-agent': 'video-analyzer' },
-      })
-      await response.body?.cancel().catch(() => undefined)
-
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location')
-        if (!location) return null
-        current = new URL(location, url).href
-        continue
-      }
-
-      if (!response.ok) return null
+    try {
+      if (tooManyRedirects || !response.ok) return null
 
       const declared = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()
-      const fromUrl = mimeTypeFromPath(url.pathname)
+      const fromUrl = mimeTypeFromPath(finalUrl.pathname)
       // An extension is only a fallback for a missing or generic type: a page
       // served from `/video.mp4` must not be reported as media, because the
       // provider would receive HTML and fail after the round trip.
@@ -120,10 +108,11 @@ export async function probeDirectMediaUrl(
       if (!Number.isInteger(length) || length <= 0) return null
       if (length > GEMINI_DIRECT_URL_MAX_BYTES) return null
 
-      return { url: url.href, mimeType, sizeBytes: length }
+      return { url: finalUrl.href, mimeType, sizeBytes: length }
+    } finally {
+      await response.body?.cancel().catch(() => undefined)
+      await close()
     }
-
-    return null
   } catch (error) {
     if (opts.signal?.aborted) throw operationCancelled({ cause: error })
     // A rejected URL (private host, bad scheme, embedded credentials) and a
@@ -188,8 +177,12 @@ export async function classifyAiInput(
  * Whether a Gemini failure means "this URL cannot be used" rather than "the
  * service is unhappy".
  *
- * Quota, authentication, cancellation, and network failures are deliberately
- * excluded: retrying those through a download would hide the real problem and
+ * Only what the provider actually said is inspected: the operation-level hint is
+ * generic recovery advice ("check your API key, quota, and network access"), so
+ * including it would make every wrapped failure look like a quota or
+ * authentication problem and suppress the download fallback. Quota,
+ * authentication, cancellation, and network failures are excluded by the same
+ * reasoning: retrying those through a download would hide the real problem and
  * pay for the download twice.
  */
 export function isDirectUrlRejection(error: unknown): boolean {
@@ -198,7 +191,6 @@ export function isDirectUrlRejection(error: unknown): boolean {
 
   const haystack = [
     error.message,
-    error.hint ?? '',
     typeof error.cause === 'object' && error.cause !== null && 'message' in error.cause
       ? String((error.cause as { message: unknown }).message)
       : '',

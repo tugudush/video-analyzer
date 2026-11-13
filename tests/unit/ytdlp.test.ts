@@ -74,9 +74,31 @@ describe('yt-dlp argument construction', () => {
 
   it('prefers H.264/AAC in MP4 and keeps lower-quality fallbacks', () => {
     const selector = buildFormatSelector(480)
-    expect(selector.startsWith('bestvideo[height<=480][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]'))
-    expect(selector.endsWith('/best')).toBe(true)
-    expect(selector).toContain('bestvideo[height<=480]+bestaudio')
+    expect(
+      selector.startsWith('bestvideo[height<=?480][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]'),
+    ).toBe(true)
+    expect(selector.endsWith('/best[height<=?480]')).toBe(true)
+    expect(selector).toContain('bestvideo[height<=?480]+bestaudio')
+  })
+
+  it('keeps the height cap on every alternative', () => {
+    for (const alternative of buildFormatSelector(720).split('/')) {
+      expect(alternative).toContain('[height<=?720]')
+      // A bare `[height<=720]` would drop audio-only and height-less formats.
+      expect(alternative).not.toContain('[height<=720]')
+    }
+  })
+
+  it('adds the egress proxy before the URL separator', () => {
+    const args = buildYtDlpArgs({
+      url: 'https://example.com/v',
+      config: loadConfig({}),
+      outputTemplate: 'out.%(ext)s',
+      proxyUrl: 'http://127.0.0.1:1234',
+    })
+
+    expect(args[args.indexOf('--proxy') + 1]).toBe('http://127.0.0.1:1234')
+    expect(args.slice(-2)).toEqual(['--', 'https://example.com/v'])
   })
 
   it('passes the cookie file and impersonation target only when configured', () => {
@@ -223,6 +245,14 @@ describe('downloadFromPlatform', () => {
     succeedWith('downloaded media')
     await downloadFromPlatform('https://example.com/v', dir, loadConfig({}))
     expect(outputTemplateOf().startsWith(dir)).toBe(true)
+  })
+
+  it('routes the downloader through the egress guard', async () => {
+    succeedWith('downloaded media')
+    await downloadFromPlatform('https://example.com/v', dir, loadConfig({}))
+
+    const args = mocks.execFile.mock.calls[0]?.[1] as string[]
+    expect(args[args.indexOf('--proxy') + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
   })
 
   it('fails when the downloader exits cleanly without writing media', async () => {

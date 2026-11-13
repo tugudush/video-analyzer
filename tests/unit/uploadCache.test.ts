@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -136,5 +136,48 @@ describe('FileUploadReferenceStore', () => {
     await store.flush()
 
     expect((await openStore(dir)).get('content:abcd')).toBeUndefined()
+  })
+
+  it('creates a missing cache directory before taking the lock', async () => {
+    const nested = path.join(dir, 'nested', 'cache')
+    const warnings: string[] = []
+    const store = new FileUploadReferenceStore({
+      dir: nested,
+      scope: SCOPE,
+      logger: createLogger('warn', (_level, message) => warnings.push(message)),
+      now: () => NOW,
+    })
+    await store.ready
+    store.set('content:abcd', reference('files/abc'))
+    await store.flush()
+
+    expect(warnings).toEqual([])
+    const reloaded = await openStore(nested)
+    expect(reloaded.get('content:abcd')).toBeDefined()
+  })
+
+  it('skips the write while a lock is held, then retries it', async () => {
+    const lockFile = path.join(dir, `uploads-${SCOPE}.json.lock`)
+    await writeFile(lockFile, '', 'utf8')
+
+    const store = new FileUploadReferenceStore({
+      dir,
+      scope: SCOPE,
+      logger: createLogger('silent'),
+      now: () => NOW,
+      lockTimeoutMs: 20,
+    })
+    await store.ready
+    store.set('content:abcd', reference('files/abc'))
+    await store.flush()
+
+    // Nothing may be published without the lock.
+    await expect(stat(path.join(dir, `uploads-${SCOPE}.json`))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    await rm(lockFile, { force: true })
+    await store.flush()
+    expect((await openStore(dir)).get('content:abcd')).toBeDefined()
   })
 })

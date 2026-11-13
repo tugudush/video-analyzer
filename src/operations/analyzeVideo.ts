@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import {
   ANALYST_SYSTEM_INSTRUCTION,
-  DIRECT_MEDIA_METADATA_WARNING,
   assertGeminiAvailable,
+  missingMetadataWarning,
   withAiMedia,
 } from './shared.js'
 import type { Operation } from './types.js'
@@ -42,7 +42,7 @@ export const analyzeVideoOperation: Operation<typeof analyzeVideoInput> = {
         durationSeconds: metadata?.durationSeconds ?? null,
         source,
       },
-      ...(metadata ? {} : { warnings: [DIRECT_MEDIA_METADATA_WARNING] }),
+      ...(metadata ? {} : { warnings: [missingMetadataWarning(source)] }),
     }
   },
 }
