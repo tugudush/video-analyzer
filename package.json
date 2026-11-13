@@ -38,7 +38,7 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lf": "npm run lint:fix && npm run format",
+    "ltfb": "npm run lint:fix && npm run typecheck && npm run format && npm run build",
     "check": "npm run typecheck && npm run lint && npm run test && npm run format:check"
   },
   "dependencies": {
