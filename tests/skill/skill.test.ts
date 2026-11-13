@@ -51,6 +51,35 @@ function parseFrontmatter(source: string): { data: Frontmatter; body: string } {
   return { data, body: match[2] ?? '' }
 }
 
+/**
+ * A launcher copy that resolves to a batch shim on `PATH`, the way a global
+ * install does. Only `cmd.exe` can run the shim, so these cases are Windows-only.
+ */
+async function createShimHarness(prefix: string): Promise<{
+  root: string
+  launcher: string
+  env: NodeJS.ProcessEnv
+}> {
+  const root = await mkdtemp(path.join(tmpdir(), prefix))
+  const scripts = path.join(root, 'skills', 'video-analyzer', 'scripts')
+  const bin = path.join(root, 'bin')
+  await mkdir(scripts, { recursive: true })
+  await mkdir(bin, { recursive: true })
+  await copyFile(path.join(SKILL_DIR, 'scripts', 'invoke.mjs'), path.join(scripts, 'invoke.mjs'))
+
+  // Stand-in for the installed shim: a batch file forwarding to this build.
+  const cli = path.resolve(SKILL_DIR, '..', '..', 'dist', 'cli.js')
+  await writeFile(
+    path.join(bin, 'video-analyzer.cmd'),
+    `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`,
+  )
+
+  const pathValue = `${bin}${path.delimiter}${process.env.Path ?? process.env.PATH ?? ''}`
+  const env: NodeJS.ProcessEnv = { ...process.env, Path: pathValue, PATH: pathValue }
+  delete env.VIDEO_ANALYZER_CLI_PATH
+  return { root, launcher: path.join(scripts, 'invoke.mjs'), env }
+}
+
 describe('video-analyzer Skill package', () => {
   it('has a SKILL.md with matching name and a discoverable description', async () => {
     const source = await readFile(path.join(SKILL_DIR, 'SKILL.md'), 'utf8')
@@ -216,9 +245,9 @@ describe('video-analyzer Skill package', () => {
 
   /**
    * The user-level install resolves to the npm bin shim, a batch file that has
-   * to run through `cmd.exe`. `cmd.exe` re-parses the whole `/c` string, so a
-   * payload passed as an argument loses `&`, `|`, and `^` to the shell; the
-   * launcher must stage it in a file instead.
+   * to run through `cmd.exe`. `cmd.exe` re-parses the whole `/c` string, so an
+   * argument loses `&`, `|`, and `^` to the shell; the launcher must therefore
+   * carry the payload on stdin instead.
    */
   it.skipIf(process.platform !== 'win32')(
     'launcher keeps payload metacharacters intact through the Windows cmd shim',
@@ -268,6 +297,76 @@ describe('video-analyzer Skill package', () => {
         expect(payload.error?.code).toBe('INPUT_NOT_FOUND')
       } finally {
         await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('streams a payload larger than a Windows command line', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'video-analyzer-large-'))
+    try {
+      const argsFile = path.join(root, 'args.json')
+      // Far past the ~32 KiB Windows command-line limit and below the CLI's
+      // 1 MiB input cap, which is exactly what `--json-file` exists for.
+      await writeFile(argsFile, JSON.stringify({ videoPath: 'x'.repeat(100_000) }))
+
+      let failure: { code?: number; stdout?: string; stderr?: string } = {}
+      try {
+        await execFileAsync(
+          process.execPath,
+          [
+            path.join(SKILL_DIR, 'scripts', 'invoke.mjs'),
+            'get_video_info',
+            '--json-file',
+            argsFile,
+          ],
+          { timeout: 30_000, windowsHide: true },
+        )
+      } catch (error) {
+        failure = error as { code?: number; stdout?: string; stderr?: string }
+      }
+
+      // An oversized command line yields no envelope at all, so the CLI's own
+      // filesystem error proves the whole payload arrived.
+      expect(failure.code).toBe(1)
+      expect(failure.stderr ?? '').not.toContain('ENAMETOOLONG')
+      const payload = JSON.parse(failure.stdout ?? '{}') as { error?: { code?: string } }
+      expect(payload.error?.code).toBe('INPUT_NOT_FOUND')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32')(
+    'streams a --json-file payload whose path has shell metacharacters',
+    async () => {
+      const harness = await createShimHarness('video-analyzer-meta-')
+      try {
+        // `&` and a space split a `cmd.exe` command line, and the payload path
+        // used to travel through one.
+        const payloadDir = path.join(harness.root, 'a & b')
+        await mkdir(payloadDir, { recursive: true })
+        const argsFile = path.join(payloadDir, 'args.json')
+        await writeFile(
+          argsFile,
+          JSON.stringify({ videoPath: path.join(harness.root, 'missing.mp4') }),
+        )
+
+        let failure: { code?: number; stdout?: string } = {}
+        try {
+          await execFileAsync(
+            process.execPath,
+            [harness.launcher, 'get_video_info', '--json-file', argsFile],
+            { timeout: 30_000, windowsHide: true, env: harness.env },
+          )
+        } catch (error) {
+          failure = error as { code?: number; stdout?: string }
+        }
+
+        expect(failure.code).toBe(1)
+        const payload = JSON.parse(failure.stdout ?? '{}') as { error?: { code?: string } }
+        expect(payload.error?.code).toBe('INPUT_NOT_FOUND')
+      } finally {
+        await rm(harness.root, { recursive: true, force: true })
       }
     },
   )

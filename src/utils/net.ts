@@ -163,8 +163,39 @@ export function redactedUrl(url: URL): string {
   return safe.href
 }
 
-/** Validate that a URL is an http(s) URL pointing at a public address. */
-async function resolveSafeHttpUrl(
+/**
+ * Redact every URL embedded in free text.
+ *
+ * Subprocess output (yt-dlp's stderr in particular) quotes the input URL, and a
+ * signed URL carries its authorization in the query string. Before such text is
+ * published as an error hint or detail, each URL is reduced to scheme, host, and
+ * path so no token, fragment, or embedded credential survives. yt-dlp sometimes
+ * quotes only the last URL component (`clip.mp4?X-Amz-Signature=…`), so any
+ * remaining `?query` is dropped as well.
+ */
+export function redactUrlsInText(text: string): string {
+  const withoutUrls = text.replace(/https?:\/\/[^\s"'<>\\]+/gi, (match) => {
+    try {
+      return redactedUrl(new URL(match))
+    } catch {
+      return match
+    }
+  })
+  return withoutUrls.replace(/[^\s"'<>\\]*\?[^\s"'<>\\]*/g, (match) => {
+    // Sentence punctuation after the URL belongs to the message, not the query.
+    const punctuation = /[.,;:)\]]+$/.exec(match)?.[0] ?? ''
+    return match.slice(0, match.indexOf('?')) + punctuation
+  })
+}
+
+/**
+ * Validate that a URL is an http(s) URL pointing at a public address.
+ *
+ * The resolved addresses are returned so a connection can be made to exactly
+ * those addresses; resolving again at connect time would reopen the window this
+ * check closes.
+ */
+export async function resolveSafeHttpUrl(
   rawUrl: string,
   options: UrlSafetyOptions = {},
   signal?: AbortSignal,
@@ -243,6 +274,121 @@ export async function assertSafeHttpUrl(
   options: UrlSafetyOptions = {},
 ): Promise<URL> {
   return (await resolveSafeHttpUrl(rawUrl, options)).url
+}
+
+export interface PinnedFetchOptions extends UrlSafetyOptions {
+  method?: string
+  headers?: Record<string, string>
+  /** Request body for methods that carry one. */
+  body?: Uint8Array | string
+  signal?: AbortSignal
+  /**
+   * Follow 3xx responses (default). A caller that must see redirects itself,
+   * such as the egress proxy, disables this.
+   */
+  followRedirects?: boolean
+}
+
+export interface PinnedFetchResult {
+  response: Response
+  /** URL of the response, after the redirects that were followed. */
+  finalUrl: URL
+  /** True when a redirect chain was longer than the guard follows. */
+  tooManyRedirects: boolean
+  /** Release the connection used by `response`. Never throws. */
+  close(): Promise<void>
+}
+
+/**
+ * Fetch a URL through the same per-hop validation and address pinning that
+ * `downloadToFile` uses.
+ *
+ * Redirects are followed here rather than by the client, so every hop is
+ * resolved and validated before it is contacted, and each connection is made to
+ * an address that was already checked. A redirect that cannot be followed
+ * (missing, malformed, or too many hops) comes back as the 3xx response.
+ */
+export async function fetchPinned(
+  rawUrl: string,
+  options: PinnedFetchOptions = {},
+): Promise<PinnedFetchResult> {
+  let current = rawUrl
+
+  for (let redirects = 0; ; redirects++) {
+    const { url, addresses } = await resolveSafeHttpUrl(current, options, options.signal)
+
+    const agent = new Agent({
+      connect: {
+        lookup: (_hostname, lookupOptions, callback) => {
+          const eligible = lookupOptions.family
+            ? addresses.filter((entry) => entry.family === lookupOptions.family)
+            : addresses
+          const first = eligible[0]
+          if (!first) {
+            callback(
+              Object.assign(new Error('No validated address for this family.'), {
+                code: 'ENOTFOUND',
+              }),
+              '',
+            )
+          } else if (lookupOptions.all) {
+            callback(null, eligible)
+          } else {
+            callback(null, first.address, first.family)
+          }
+        },
+      },
+    })
+    const close = async () => {
+      await agent.destroy().catch(() => undefined)
+    }
+
+    let response: Response
+    try {
+      response = await fetch(url, {
+        redirect: 'manual',
+        ...(options.method ? { method: options.method } : {}),
+        ...(options.headers ? { headers: options.headers } : {}),
+        ...(options.body !== undefined ? { body: options.body } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+        dispatcher: agent,
+      })
+    } catch (error) {
+      await close()
+      throw error
+    }
+
+    if (options.followRedirects === false) {
+      return { response, finalUrl: url, tooManyRedirects: false, close }
+    }
+
+    if (response.status < 300 || response.status >= 400) {
+      return { response, finalUrl: url, tooManyRedirects: false, close }
+    }
+
+    const location = response.headers.get('location')
+    const beyondLimit = redirects >= MAX_REDIRECTS
+    let next: URL | undefined
+    if (location !== null && !beyondLimit) {
+      try {
+        next = new URL(location, url)
+      } catch {
+        next = undefined
+      }
+    }
+    if (!next) {
+      return {
+        response,
+        finalUrl: url,
+        tooManyRedirects: beyondLimit && location !== null,
+        close,
+      }
+    }
+
+    await response.body?.cancel().catch(() => undefined)
+    await close()
+    current = next.href
+  }
 }
 
 export interface DownloadResult {
@@ -403,10 +549,20 @@ export async function downloadToFile(
 
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined)
+      // The declared type is part of the diagnosis: a refused document may still
+      // be retrievable by the platform downloader, while a refused media stream
+      // is not.
+      const contentType = response.headers.get('content-type') ?? undefined
       throw new VideoAnalyzerError(
         'DOWNLOAD_FAILED',
         `Download failed with HTTP ${response.status} ${response.statusText}`.trim(),
-        { details: { url: redactedUrl(current), status: response.status } },
+        {
+          details: {
+            url: redactedUrl(current),
+            status: response.status,
+            ...(contentType ? { contentType } : {}),
+          },
+        },
       )
     }
 

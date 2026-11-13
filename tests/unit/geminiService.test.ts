@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -10,6 +10,7 @@ import {
   type GeminiFileHandle,
 } from '../../src/services/gemini.js'
 import { createLogger } from '../../src/utils/logger.js'
+import { FileUploadReferenceStore } from '../../src/services/uploadCache.js'
 
 const sdk = vi.hoisted(() => ({ generateContent: vi.fn() }))
 
@@ -98,6 +99,17 @@ function createServiceWith(api: FakeApi, env: Record<string, string> = {}) {
     logger: createLogger('silent'),
     api: api as unknown as GeminiApi,
     sleep: async () => undefined,
+  })
+}
+
+/** A service backed by an on-disk reference store, for persistence tests. */
+function serviceWithStore(api: FakeApi, store: FileUploadReferenceStore) {
+  return new GeminiMediaService({
+    config: loadConfig({}),
+    logger: createLogger('silent'),
+    api: api as unknown as GeminiApi,
+    sleep: async () => undefined,
+    store,
   })
 }
 
@@ -257,6 +269,33 @@ describe('GeminiMediaService', () => {
     await service.ensureUploaded({ ...uploadParams, cacheKey: 'direct:https://example.com/b.mp4' })
 
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-uploads when the provider confirms the cached file is gone', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    await service.ensureUploaded(uploadParams)
+
+    api.getFile.mockRejectedValueOnce(Object.assign(new Error('File not found'), { status: 404 }))
+    await service.ensureUploaded(uploadParams)
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a provider failure instead of re-uploading the same content', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    await service.ensureUploaded(uploadParams)
+
+    // A quota or transport problem says nothing about the cached file, so the
+    // reference must survive and no second upload may be spent on it.
+    api.getFile.mockRejectedValueOnce(Object.assign(new Error('Quota exceeded'), { status: 429 }))
+
+    await expect(service.ensureUploaded(uploadParams)).rejects.toMatchObject({
+      code: 'GEMINI_REQUEST_FAILED',
+      message: expect.stringMatching(/Could not confirm the cached Gemini file/),
+    })
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
   })
 
   it('coalesces concurrent uploads of the same file', async () => {
@@ -578,5 +617,132 @@ describe('GeminiMediaService timeouts and cancellation', () => {
     expect(firstCall.signal.aborted).toBe(true)
     await expect(service.ensureUploaded(uploadParams)).resolves.toMatchObject({ state: 'ACTIVE' })
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
+})
+describe('persistent upload references', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'va-persist-'))
+  })
+
+  afterEach(async () => {
+    // Writes are debounced; give an in-flight flush a moment to finish before
+    // the directory is removed.
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  })
+
+  async function openStore() {
+    const store = new FileUploadReferenceStore({
+      dir,
+      scope: 'scope-a',
+      logger: createLogger('silent'),
+    })
+    await store.ready
+    return store
+  }
+
+  it('reuses a reference persisted by an earlier process', async () => {
+    const firstApi = createFakeApi()
+    const firstStore = await openStore()
+    await serviceWithStore(firstApi, firstStore).ensureUploaded(uploadParams)
+    await firstStore.flush()
+    expect(firstApi.uploadFile).toHaveBeenCalledTimes(1)
+
+    const secondApi = createFakeApi()
+    const secondStore = await openStore()
+    await serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams)
+
+    expect(secondApi.uploadFile).not.toHaveBeenCalled()
+    expect(secondApi.getFile).toHaveBeenCalled()
+  })
+
+  it('re-uploads and drops the reference when the stored file is gone', async () => {
+    const firstStore = await openStore()
+    await serviceWithStore(createFakeApi(), firstStore).ensureUploaded(uploadParams)
+    await firstStore.flush()
+
+    const secondApi = createFakeApi()
+    secondApi.getFile.mockResolvedValue(handle({ state: 'FAILED' }))
+    const secondStore = await openStore()
+    await serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams)
+
+    expect(secondApi.uploadFile).toHaveBeenCalledTimes(1)
+    expect(secondApi.getFile).toHaveBeenCalled()
+  })
+
+  it('drops a reference whose MIME type no longer matches', async () => {
+    const firstStore = await openStore()
+    await serviceWithStore(createFakeApi(), firstStore).ensureUploaded(uploadParams)
+    await firstStore.flush()
+
+    const secondApi = createFakeApi()
+    secondApi.getFile.mockResolvedValue(handle({ mimeType: 'audio/mpeg' }))
+    const secondStore = await openStore()
+    await serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams)
+
+    expect(secondApi.uploadFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a persisted reference the provider could not confirm', async () => {
+    const firstStore = await openStore()
+    await serviceWithStore(createFakeApi(), firstStore).ensureUploaded(uploadParams)
+    await firstStore.flush()
+
+    const secondApi = createFakeApi()
+    secondApi.getFile.mockRejectedValue(Object.assign(new Error('Quota exceeded'), { status: 429 }))
+    const secondStore = await openStore()
+
+    await expect(
+      serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams),
+    ).rejects.toMatchObject({ code: 'GEMINI_REQUEST_FAILED' })
+
+    expect(secondApi.uploadFile).not.toHaveBeenCalled()
+    expect(secondStore.get('content:demo')).toBeDefined()
+  })
+
+  it('keeps using the in-memory path when the store is absent', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    await service.ensureUploaded(uploadParams)
+    await service.ensureUploaded(uploadParams)
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
+  })
+})
+describe('GoogleGenAiApi file parts', () => {
+  const base = { model: 'test', parts: [{ kind: 'text' as const, text: 'hi' }] }
+
+  it('omits mimeType for a typed-less file reference', async () => {
+    sdk.generateContent.mockResolvedValueOnce({
+      text: 'ok',
+      candidates: [{ finishReason: 'STOP' }],
+    })
+    await new GoogleGenAiApi('test').generateContent({
+      ...base,
+      parts: [{ kind: 'file', fileUri: 'https://www.youtube.com/watch?v=a' }],
+    })
+    const request = sdk.generateContent.mock.calls.at(-1)?.[0] as {
+      contents: Array<{ parts: Array<Record<string, unknown>> }>
+    }
+    expect(request.contents[0]?.parts[0]).toEqual({
+      fileData: { fileUri: 'https://www.youtube.com/watch?v=a' },
+    })
+  })
+
+  it('sends mimeType alongside a hint that has one', async () => {
+    sdk.generateContent.mockResolvedValueOnce({
+      text: 'ok',
+      candidates: [{ finishReason: 'STOP' }],
+    })
+    await new GoogleGenAiApi('test').generateContent({
+      ...base,
+      parts: [{ kind: 'file', fileUri: 'https://cdn.test/clip.mp4', mimeType: 'video/mp4' }],
+    })
+    const request = sdk.generateContent.mock.calls.at(-1)?.[0] as {
+      contents: Array<{ parts: Array<Record<string, unknown>> }>
+    }
+    expect(request.contents[0]?.parts[0]).toEqual({
+      fileData: { fileUri: 'https://cdn.test/clip.mp4', mimeType: 'video/mp4' },
+    })
   })
 })

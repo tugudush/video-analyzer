@@ -10,9 +10,11 @@ import type { OperationContext } from '../../src/operations/types.js'
 
 /**
  * `writeFile` is intercepted so a transcript write can fail the way a full or
- * read-only volume does, which is not reproducible on every platform.
+ * read-only volume does, which is not reproducible on every platform. The
+ * failure is scoped to `dir`: media snapshots are written to the OS temporary
+ * directory during the same call and must still succeed.
  */
-const writeFailure = vi.hoisted(() => ({ code: undefined as string | undefined }))
+const writeFailure = vi.hoisted(() => ({ code: undefined as string | undefined, dir: '' }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -20,7 +22,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     ...actual,
     writeFile: (async (...args: Parameters<typeof actual.writeFile>) => {
       const code = writeFailure.code
-      if (code) throw Object.assign(new Error(`simulated ${code}`), { code })
+      const inTargetDirectory = String(args[0]).startsWith(writeFailure.dir)
+      if (code && inTargetDirectory) throw Object.assign(new Error(`simulated ${code}`), { code })
       return actual.writeFile(...args)
     }) as typeof actual.writeFile,
   }
@@ -70,12 +73,14 @@ describe('transcribe_video output failures', () => {
   beforeEach(async () => {
     writeFailure.code = undefined
     dir = await mkdtemp(path.join(tmpdir(), 'va-output-'))
+    writeFailure.dir = dir
     source = path.join(dir, 'sample.mp4')
     await writeFileActual(source, 'media bytes', 'utf8')
   })
 
   afterEach(async () => {
     writeFailure.code = undefined
+    writeFailure.dir = ''
     await rm(dir, { recursive: true, force: true })
   })
 

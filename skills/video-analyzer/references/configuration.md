@@ -114,6 +114,15 @@ deadline would then fire before the request starts.
 | --------------------------- | ----------------- | ------------------------------------------------------------------------------- |
 | `VIDEO_ANALYZER_OUTPUT_DIR` | current directory | Base directory for `video-analyzer-output/` folders that hold extracted frames. |
 
+## Caching
+
+| Variable                   | Default | Purpose                                                                                                                                                                                                                                     |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_CACHE_DIR` | —       | Opt-in directory for the persistent Gemini upload-reference cache. When unset, uploads are reused only within one process. Environment only — a `.env` file cannot set it. Stored metadata is a file name, MIME type, and expiry; no media. |
+
+Deleting the cache directory only removes local references. It does not delete
+files already uploaded to Gemini, which follow the provider's 48-hour retention.
+
 ## Binaries
 
 | Variable       | Default   | Purpose                                                             |
@@ -123,7 +132,10 @@ deadline would then fire before the request starts.
 
 ## Platform downloads (yt-dlp)
 
-Page URLs are downloaded with `yt-dlp`, which must be installed for them.
+Page URLs are downloaded with `yt-dlp`, which must be installed for them. Every
+request yt-dlp makes goes through a loopback guard that applies the same
+private-host policy as the rest of the tool, so a page cannot redirect it at a
+private address unless `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS=true`.
 
 | Variable                | Default            | Purpose                                                                   |
 | ----------------------- | ------------------ | ------------------------------------------------------------------------- |
@@ -139,9 +151,9 @@ fails as `INVALID_INPUT` before any download starts.
 
 ## Network
 
-| Variable                             | Default | Purpose                                                                                                                                         |
-| ------------------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false` | Allow loopback, private, link-local, and metadata addresses. Only enable for media you control. Environment only — a `.env` file cannot set it. |
+| Variable                             | Default | Purpose                                                                                                                                                                                     |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS` | `false` | Allow loopback, private, link-local, and metadata addresses, including destinations reached by `yt-dlp`. Only enable for media you control. Environment only — a `.env` file cannot set it. |
 
 ## Diagnostics
 

@@ -4,12 +4,7 @@ import { z } from 'zod'
 import { isRemoteUrl, normalizeLocalPath } from '../services/mediaInput.js'
 import { VideoAnalyzerError, invalidInput, toVideoAnalyzerError } from '../utils/errors.js'
 import { ensureDir, isSameFile } from '../utils/fsUtils.js'
-import {
-  assertGeminiAvailable,
-  getGeminiService,
-  prepareMedia,
-  uploadIdentityFor,
-} from './shared.js'
+import { assertGeminiAvailable, withAiMedia } from './shared.js'
 import type { Artifact, Operation } from './types.js'
 
 export const transcribeVideoInput = z.object({
@@ -199,84 +194,78 @@ export const transcribeVideoOperation: Operation<typeof transcribeVideoInput> = 
     // Cheap local validation first, then the provider requirement, and only then
     // the download and probe work.
     assertGeminiAvailable(ctx)
-    const prepared = await prepareMedia(input.videoPath, ctx)
-    try {
-      // A downloaded copy only has a local path after resolution.
-      if (target && !sourcePath) await assertNotSourceAlias(target, prepared.path)
 
-      const service = getGeminiService(ctx)
-      const upload = uploadIdentityFor(prepared.media)
+    const { result: transcript, metadata } = await withAiMedia(
+      input.videoPath,
+      ctx,
+      async (media) => {
+        // A downloaded copy only has a local path after resolution.
+        if (target && !sourcePath && media.path) await assertNotSourceAlias(target, media.path)
 
-      const transcript = await service.generateWithFile({
-        path: prepared.path,
-        mimeType: prepared.media.mimeType,
-        ...upload,
-        prompt: buildPrompt(input.language, input.translateToEnglish ?? false),
-        systemInstruction: TRANSCRIBE_SYSTEM_INSTRUCTION,
-        temperature: 0.1,
-        ...(ctx.signal ? { signal: ctx.signal } : {}),
-        ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
-      })
+        return media.generate({
+          prompt: buildPrompt(input.language, input.translateToEnglish ?? false),
+          systemInstruction: TRANSCRIBE_SYSTEM_INSTRUCTION,
+          temperature: 0.1,
+        })
+      },
+    )
 
-      const text = transcript.trim()
-      if (!text) {
-        throw new VideoAnalyzerError(
-          'GEMINI_REQUEST_FAILED',
-          'Gemini returned an empty transcript.',
-          {
-            hint: 'Retry the transcription; an empty response does not establish that the media has no speech.',
-          },
+    const text = transcript.trim()
+    if (!text) {
+      throw new VideoAnalyzerError(
+        'GEMINI_REQUEST_FAILED',
+        'Gemini returned an empty transcript.',
+        {
+          hint: 'Retry the transcription; an empty response does not establish that the media has no speech.',
+        },
+      )
+    }
+    const noSpeech = text === 'NO_SPEECH'
+    const warnings: string[] = []
+    const artifacts: Artifact[] = []
+
+    if (noSpeech) {
+      warnings.push('Gemini reported no audible speech in this media.')
+    }
+
+    if (target && !noSpeech) {
+      try {
+        await writeTranscript(target, `${text}\n`, input.overwrite ?? false)
+        artifacts.push({
+          path: target,
+          kind: 'transcript',
+          mimeType: 'text/plain',
+        })
+      } catch (error) {
+        // The transcript is the result; the file is a convenience. Losing the
+        // text because the write failed would throw away the whole generation,
+        // so the failure is reported as a warning next to the returned text.
+        const failure = toVideoAnalyzerError(error)
+        const code = failure.details?.['code']
+        warnings.push(
+          `The transcript was not written to ${target}: ${failure.message}${
+            typeof code === 'string' ? ` (${code})` : ''
+          }${failure.hint ? ` ${failure.hint}` : ''}`,
         )
       }
-      const noSpeech = text === 'NO_SPEECH'
-      const warnings: string[] = []
-      const artifacts: Artifact[] = []
+    }
 
-      if (noSpeech) {
-        warnings.push('Gemini reported no audible speech in this media.')
-      }
+    if (metadata?.hasAudio === false) {
+      warnings.push('The container reports no audio track; the transcript may be incomplete.')
+    }
 
-      if (target && !noSpeech) {
-        try {
-          await writeTranscript(target, `${text}\n`, input.overwrite ?? false)
-          artifacts.push({
-            path: target,
-            kind: 'transcript',
-            mimeType: 'text/plain',
-          })
-        } catch (error) {
-          // The transcript is the result; the file is a convenience. Losing the
-          // text because the write failed would throw away the whole generation,
-          // so the failure is reported as a warning next to the returned text.
-          const failure = toVideoAnalyzerError(error)
-          const code = failure.details?.['code']
-          warnings.push(
-            `The transcript was not written to ${target}: ${failure.message}${
-              typeof code === 'string' ? ` (${code})` : ''
-            }${failure.hint ? ` ${failure.hint}` : ''}`,
-          )
-        }
-      }
-
-      if (prepared.metadata.hasAudio === false) {
-        warnings.push('The container reports no audio track; the transcript may be incomplete.')
-      }
-
-      return {
-        summary: noSpeech ? 'No audible speech detected.' : text,
-        data: {
-          language: input.language ?? null,
-          translatedToEnglish: input.translateToEnglish ?? false,
-          noSpeech,
-          durationSeconds: prepared.metadata.durationSeconds,
-          characters: text.length,
-          ...(target ? { outputPath: target, outputWritten: artifacts.length > 0 } : {}),
-        },
-        ...(warnings.length > 0 ? { warnings } : {}),
-        ...(artifacts.length > 0 ? { artifacts } : {}),
-      }
-    } finally {
-      await prepared.media.cleanup()
+    return {
+      summary: noSpeech ? 'No audible speech detected.' : text,
+      data: {
+        language: input.language ?? null,
+        translatedToEnglish: input.translateToEnglish ?? false,
+        noSpeech,
+        durationSeconds: metadata?.durationSeconds ?? null,
+        characters: text.length,
+        ...(target ? { outputPath: target, outputWritten: artifacts.length > 0 } : {}),
+      },
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(artifacts.length > 0 ? { artifacts } : {}),
     }
   },
 }

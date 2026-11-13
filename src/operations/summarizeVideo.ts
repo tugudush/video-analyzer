@@ -3,9 +3,8 @@ import {
   ANALYST_SYSTEM_INSTRUCTION,
   TIMESTAMP_ESTIMATE_WARNING,
   assertGeminiAvailable,
-  getGeminiService,
-  prepareMedia,
-  uploadIdentityFor,
+  missingMetadataWarning,
+  withAiMedia,
 } from './shared.js'
 import type { Operation } from './types.js'
 
@@ -40,36 +39,27 @@ export const summarizeVideoOperation: Operation<typeof summarizeVideoInput> = {
 
   async run(input, ctx) {
     assertGeminiAvailable(ctx)
-    const prepared = await prepareMedia(input.videoPath, ctx)
-    try {
-      const service = getGeminiService(ctx)
-      const upload = uploadIdentityFor(prepared.media)
 
-      const prompt = input.focus
-        ? `${SUMMARY_PROMPT}\n\nPay particular attention to: ${input.focus}`
-        : SUMMARY_PROMPT
+    const prompt = input.focus
+      ? `${SUMMARY_PROMPT}\n\nPay particular attention to: ${input.focus}`
+      : SUMMARY_PROMPT
 
-      const summary = await service.generateWithFile({
-        path: prepared.path,
-        mimeType: prepared.media.mimeType,
-        ...upload,
-        prompt,
-        systemInstruction: ANALYST_SYSTEM_INSTRUCTION,
-        ...(ctx.signal ? { signal: ctx.signal } : {}),
-        ...(ctx.onProgress ? { onProgress: ctx.onProgress } : {}),
-      })
+    const {
+      result: summary,
+      metadata,
+      source,
+    } = await withAiMedia(input.videoPath, ctx, (media) =>
+      media.generate({ prompt, systemInstruction: ANALYST_SYSTEM_INSTRUCTION }),
+    )
 
-      return {
-        summary: summary.trim(),
-        data: {
-          durationSeconds: prepared.metadata.durationSeconds,
-          source: prepared.media.source,
-          ...(input.focus ? { focus: input.focus } : {}),
-        },
-        warnings: [TIMESTAMP_ESTIMATE_WARNING],
-      }
-    } finally {
-      await prepared.media.cleanup()
+    return {
+      summary: summary.trim(),
+      data: {
+        durationSeconds: metadata?.durationSeconds ?? null,
+        source,
+        ...(input.focus ? { focus: input.focus } : {}),
+      },
+      warnings: [TIMESTAMP_ESTIMATE_WARNING, ...(metadata ? [] : [missingMetadataWarning(source)])],
     }
   },
 }
