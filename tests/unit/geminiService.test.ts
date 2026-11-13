@@ -271,6 +271,33 @@ describe('GeminiMediaService', () => {
     expect(api.uploadFile).toHaveBeenCalledTimes(2)
   })
 
+  it('re-uploads when the provider confirms the cached file is gone', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    await service.ensureUploaded(uploadParams)
+
+    api.getFile.mockRejectedValueOnce(Object.assign(new Error('File not found'), { status: 404 }))
+    await service.ensureUploaded(uploadParams)
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a provider failure instead of re-uploading the same content', async () => {
+    const api = createFakeApi()
+    const service = createService(api)
+    await service.ensureUploaded(uploadParams)
+
+    // A quota or transport problem says nothing about the cached file, so the
+    // reference must survive and no second upload may be spent on it.
+    api.getFile.mockRejectedValueOnce(Object.assign(new Error('Quota exceeded'), { status: 429 }))
+
+    await expect(service.ensureUploaded(uploadParams)).rejects.toMatchObject({
+      code: 'GEMINI_REQUEST_FAILED',
+      message: expect.stringMatching(/Could not confirm the cached Gemini file/),
+    })
+    expect(api.uploadFile).toHaveBeenCalledTimes(1)
+  })
+
   it('coalesces concurrent uploads of the same file', async () => {
     const api = createFakeApi()
     const service = createService(api)
@@ -655,6 +682,23 @@ describe('persistent upload references', () => {
     await serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams)
 
     expect(secondApi.uploadFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a persisted reference the provider could not confirm', async () => {
+    const firstStore = await openStore()
+    await serviceWithStore(createFakeApi(), firstStore).ensureUploaded(uploadParams)
+    await firstStore.flush()
+
+    const secondApi = createFakeApi()
+    secondApi.getFile.mockRejectedValue(Object.assign(new Error('Quota exceeded'), { status: 429 }))
+    const secondStore = await openStore()
+
+    await expect(
+      serviceWithStore(secondApi, secondStore).ensureUploaded(uploadParams),
+    ).rejects.toMatchObject({ code: 'GEMINI_REQUEST_FAILED' })
+
+    expect(secondApi.uploadFile).not.toHaveBeenCalled()
+    expect(secondStore.get('content:demo')).toBeDefined()
   })
 
   it('keeps using the in-memory path when the store is absent', async () => {

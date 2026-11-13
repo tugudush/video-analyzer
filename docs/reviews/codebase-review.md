@@ -4,138 +4,136 @@ Reviewed: 2026-11-13
 
 ## Summary
 
-The project has a coherent shared operation registry for the CLI and MCP adapters,
-strict TypeScript settings, and substantial automated coverage. Local media
-integration tests and the normal build, typecheck, and lint checks passed on
-Windows. Four issues merit attention: platform downloads can exceed the
-configured disk budget, downloader diagnostics can expose signed URLs, some
-platform pages never reach the downloader, and a failed cache write is not
-retried.
+The shared operation registry keeps the CLI and MCP interfaces aligned, and the
+project has strict TypeScript settings and substantial unit and local integration
+coverage. Four reproducible issues were found in the Windows Skill launcher and
+the upload cache; all four are fixed, each with a regression test that fails
+against the previous implementation. See [Resolution](#resolution).
 
 Severity describes impact in the stated circumstances, not a claim that every
-deployment is affected. All four findings are fixed; see
-[Resolution](#resolution).
+deployment is affected.
 
 ## Findings
 
-### P1 - Platform downloads can exceed the configured size limit on disk
+### P2 - Windows launcher misinterprets metacharacters in its temporary path
 
-**Locations:** [ytdlp.ts:107](../../src/services/ytdlp.ts#L107),
-[ytdlp.ts:328](../../src/services/ytdlp.ts#L328),
-[README.md:297](../../README.md#L297).
+**Locations:** [invoke.mjs](../../skills/video-analyzer/scripts/invoke.mjs#L86),
+[invoke.mjs](../../skills/video-analyzer/scripts/invoke.mjs#L99),
+[invoke.mjs](../../skills/video-analyzer/scripts/invoke.mjs#L200),
+[skill.test.ts](../../tests/skill/skill.test.ts#L256).
 
-The downloader passes `--max-filesize` to yt-dlp but checks the actual output
-size only after the subprocess exits. An unknown-length transfer can therefore
-write beyond `VIDEO_ANALYZER_DOWNLOAD_MAX_MB` before the application rejects it.
-With a local chunked HTTP response, a 1 MiB limit, and the installed yt-dlp, the
-downloader wrote a 2 MiB file and only then returned `DOWNLOAD_FAILED`. Longer
-or concurrent downloads can exhaust temporary disk space despite the configured
-limit; the timeout limits duration, not bytes.
+For the global Windows installation, the launcher stages the JSON in a
+temporary file but passes that file's path through `cmd.exe`. Node's argument
+quoting does not protect a path containing `&` unless it also needs quoting for
+another reason, so `cmd.exe` interprets the character as a command separator.
+With a temporary directory named `temp&folder`, a local reproduction passed
+only the prefix ending in `temp` to the CLI, which returned `INPUT_NOT_FOUND`;
+the shell also attempted to interpret the remainder as a command. The existing
+Windows test puts metacharacters in the JSON, not in the temporary path.
 
-**Recommendation:** Enforce an aggregate byte or disk budget while platform
-downloads are running, including partial files and separate streams, and stop
-the subprocess when it is exceeded. Add a real-downloader regression test with
-an unknown-length response; a mocked oversized output only verifies the
-post-download check.
+**Recommendation:** Avoid shell parsing for the launcher or correctly protect
+every argument passed to the batch shim. Add Windows tests with metacharacters
+and spaces in the temporary directory and verify both successful forwarding and
+the absence of unintended commands.
 
-**Status:** Resolved. `downloadThroughGuard` now watches the destination
-directory and kills the downloader when the total footprint passes the limit.
+**Status:** Resolved. The payload is streamed over stdin, so neither the JSON nor
+a staging path reaches the `cmd.exe` command line. The shell route now accepts
+only operation names and flags (`[A-Za-z0-9_.:-]+`) and refuses anything else
+with `INVALID_INPUT` instead of passing it to the shell.
 
-### P1 - Downloader errors expose query-string credentials
+### P2 - Large JSON files fail before the Skill launcher can return an envelope
 
-**Locations:** [ytdlp.ts:125](../../src/services/ytdlp.ts#L125),
-[ytdlp.ts:135](../../src/services/ytdlp.ts#L135),
-[egressGuard.ts:178](../../src/services/egressGuard.ts#L178).
+**Locations:** [invoke.mjs](../../skills/video-analyzer/scripts/invoke.mjs#L99),
+[invoke.mjs](../../skills/video-analyzer/scripts/invoke.mjs#L194),
+[cli.ts](../../src/adapters/cli.ts#L37).
 
-The last lines of yt-dlp stderr are copied verbatim into error details and, for
-some failures, hints. yt-dlp can include the complete input URL in those lines.
-A local unsupported-page reproduction returned an error envelope containing
-the synthetic `?token=review-test-token` query. Signed URLs and their bearer
-tokens can consequently reach CLI output, clients, or logs. The egress guard
-also logs an unredacted target at debug level.
+The launcher reads `--json-file` into memory and, for a checkout-relative build
+or explicit CLI override, passes its contents as a command-line argument.
+Windows has a much smaller command-line limit than the CLI's 1 MiB input
+limit. A local 40,000-character JSON-file probe failed with a synchronous
+`spawn ENAMETOOLONG`, printed a Node stack trace, and produced no JSON envelope.
+Using `--json-file` therefore does not avoid the limit in this route.
 
-**Recommendation:** Sanitize URLs in subprocess diagnostics and proxy logs,
-including query strings, fragments, and credentials, before publishing them.
-Test both structured error details and hints with synthetic signed URLs; avoid
-relying only on redaction in the direct-download code.
+**Recommendation:** Forward the file path or use stdin for the direct Node
+route, retaining the CLI's size checks. Normalize synchronous spawn failures as
+well as child `error` events. Test a valid payload larger than the Windows
+command-line limit through `--json-file`.
 
-**Status:** Resolved. `redactUrlsInText` sanitizes downloader output before it
-becomes a hint or detail, and the proxy logs redacted targets.
+**Status:** Resolved. `--json-file` is streamed into the CLI's stdin rather than
+materialised as an argument, so the 1 MiB payload cap is the only limit.
+Synchronous `spawn` failures are converted into the normal JSON envelope instead
+of escaping as a stack trace.
 
-### P2 - A page that rejects the preliminary GET never reaches yt-dlp
+### P2 - A cache flush can hide newer in-memory updates
 
-**Locations:** [mediaInput.ts:100](../../src/services/mediaInput.ts#L100),
-[mediaInput.ts:118](../../src/services/mediaInput.ts#L118),
-[net.ts:525](../../src/utils/net.ts#L525),
-[shared.ts:299](../../src/operations/shared.ts#L299).
+**Locations:** [uploadCache.ts](../../src/services/uploadCache.ts#L130),
+[uploadCache.ts](../../src/services/uploadCache.ts#L224),
+[uploadCache.ts](../../src/services/uploadCache.ts#L243),
+[uploadCache.ts](../../src/services/uploadCache.ts#L137).
 
-Platform fallback happens only after a successful direct GET returns HTML.
-When the initial request returns 403, 429, or another non-success status,
-`downloadToFile` throws before yt-dlp is called. A local HTML endpoint returning
-403 reproduced this. This also affects the fallback after Gemini rejects a
-YouTube URL. In particular, configured yt-dlp cookies or impersonation cannot
-help when the unauthenticated preliminary GET is itself blocked.
+`writePending` takes a batch and awaits the disk merge. If `set` queues another
+entry while that await is in progress, the older batch subsequently clears and
+replaces the in-memory map without applying the newer queued operation. Until
+the next flush finishes, `get` misses that entry and `delete` may refuse to
+queue its removal. In an instrumented local interleaving, setting `b` during
+the first merge made it disappear from memory; deleting it then did nothing,
+and `b` reappeared after the queued write and reload. Concurrent AI calls can
+therefore miss reusable uploads, and a concurrent invalidation can be lost.
 
-**Recommendation:** Route eligible page URLs to the guarded downloader without
-requiring a successful unauthenticated body download, while preserving per-hop
-URL policy and direct-media error handling. Cover blocked page responses,
-cookies/impersonation, and provider fallback in regression tests.
+**Recommendation:** Preserve or replay operations queued during the merge
+before publishing the in-memory view, and ensure deletion is represented even
+when an entry is temporarily absent. Add a deterministic test that pauses the
+merge, performs overlapping set and delete operations, and checks both the
+live view and the reloaded file.
 
-**Status:** Resolved. A refused response is retried through the guarded
-downloader unless it is identifiable as media; unsupported or missing-downloader
-failures keep the original HTTP error. `downloadToFile` now reports the response
-status and content type that this decision needs.
+**Status:** Resolved. `writePending` replays every operation queued during the
+merge onto the published in-memory view, so a concurrent `set` stays visible and
+a following `delete` is queued rather than dropped.
 
-### P2 - A failed persistent-cache write discards the queued update
+### P2 - Transient cache-validation errors trigger unnecessary uploads
 
-**Locations:** [uploadCache.ts:144](../../src/services/uploadCache.ts#L144),
-[uploadCache.ts:224](../../src/services/uploadCache.ts#L224),
-[uploadCache.ts:253](../../src/services/uploadCache.ts#L253).
+**Locations:** [gemini.ts](../../src/services/gemini.ts#L329),
+[gemini.ts](../../src/services/gemini.ts#L486),
+[gemini.ts](../../src/services/gemini.ts#L508).
 
-`writePending` removes operations from `pending` before writing and renaming
-the staging file. If either step fails, `flush` logs the error but does not put
-those operations back. A later `flush` has nothing to retry, although the
-in-memory entry remains. In a local reproduction, making the target path a
-directory caused the rename to fail; removing that obstruction and flushing
-again did not persist the entry. A fresh process therefore reuploads content
-and repeats processing after a transient filesystem failure.
+`checkActive` treats every non-`VideoAnalyzerError` from `getFile` as a cache
+miss. This includes provider quota, authentication, and network errors, not
+just a missing or inactive file. The caller discards the reference and starts
+another upload, potentially wasting bandwidth and quota and obscuring the
+original failure. With a fake provider whose status request returned a 429,
+two requests for the same content performed two uploads.
 
-**Recommendation:** Restore failed operations to the queue in their original
-order, preserving any newer updates, and retry on a subsequent flush. Test a
-real write or rename failure followed by recovery, plus concurrent updates.
+**Recommendation:** Treat only a definitive missing or inactive file as a miss;
+surface transient, quota, and authorization failures without deleting the
+reference. Cover both memory and persistent-cache paths with simulated 404,
+429, and network failures.
 
-**Status:** Resolved. `writePending` returns failed operations to the front of
-the queue before the error is reported, so the next flush retries them.
+**Status:** Resolved. Only a not-found response is read as a cache miss; any
+other provider failure is reported as `GEMINI_REQUEST_FAILED` and the reference
+is kept, so a retry can still reuse it.
 
 ## Resolution
 
-| Finding                               | Change                                                                                                                                      | Regression test                                                |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Download size enforcement             | Watchdog over the download directory; the child process is killed once the aggregate limit is passed.                                       | `ytdlp` stops a download that outgrows the limit while running |
-| Diagnostics leaking signed URLs       | URL redaction applied to downloader output and proxy logs, including query-only fragments.                                                  | `ytdlp`, `net` redaction cases                                 |
-| Refused page bypassing the downloader | Authentication and rate-limit failures (401, 403, 407, 429) retry through the guarded downloader unless the response is identifiable media. | `mediaInput` refused-page, refused-media, and 404 cases        |
-| Lost cache writes                     | Failed operations return to the pending queue for the next flush.                                                                           | `uploadCache` retry after a real rename failure                |
-
-The installed yt-dlp was used to confirm the first two fixes end to end: an
-unknown-length response is now stopped at the limit instead of being written in
-full, and the reproduced 403 page error no longer contains its query token. A
-real `EPERM` rename failure followed by a retry now persists the reference.
-
-The size limit is enforced by polling the destination directory, so a fast
-transfer can exceed the limit by roughly one polling interval of data before the
-process is killed. The temporary directory is removed when the download fails.
+| Finding                             | Change                                                                                                          | Regression test                                                                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows launcher metacharacters     | The payload, and its staging path, never reach `cmd.exe`; the shell route accepts only `[A-Za-z0-9_.:-]+` args. | `streams a --json-file payload whose path has shell metacharacters`                                                                   |
+| Large JSON payloads                 | `--json-file` is streamed to stdin; synchronous spawn errors become a JSON envelope.                            | `streams a payload larger than a Windows command line`                                                                                |
+| Cache flush losing queued updates   | Operations queued during the merge are replayed before the in-memory view is published.                         | `keeps operations queued while an earlier write is in flight`                                                                         |
+| Validation errors causing re-upload | A status failure other than not-found surfaces as `GEMINI_REQUEST_FAILED` and keeps the cached reference.       | `reports a provider failure instead of re-uploading the same content`<br>`keeps a persisted reference the provider could not confirm` |
 
 ## Validation and limits
 
-- `npm run typecheck`, `npm run lint`, and `npm test` passed on Windows with
-  Node 26.11.1: 421 tests passed and 2 were skipped. The skips were the
-  opt-in live Gemini test and one platform-dependent transcription test.
-- Local, synthetic HTTP and filesystem probes reproduced the four findings
-  before the fixes and confirmed them afterwards. No real signed URL, external
-  platform, or live Gemini request was used.
-- The default CI runs on Ubuntu with Node 22 only
-  ([ci.yml](../../.github/workflows/ci.yml)); consider a Windows job for the
-  documented Windows launcher and filesystem behavior.
-- Live Gemini routing and third-party platform compatibility remain unverified
-  by this review. This is a risk-focused code review, not an exhaustive security
-  audit or a guarantee about external services.
+- `npm run check` passed on Windows with Node 26.11.1: typecheck, lint, build,
+  427 tests, and formatting passed; two tests were skipped.
+- Each new regression test was run against the pre-fix code first: the cache
+  race, the in-memory provider failure, and the persisted-reference case all
+  failed there and pass after the change. The launcher findings were reproduced
+  with synthetic local inputs before the fix.
+- The cache race uses controlled scheduling around the disk merge; the provider
+  findings use a fake Gemini API. No real credentials or external media were
+  used.
+- The live Gemini test was skipped, so provider compatibility and current
+  third-party platform behavior were not verified. CI currently runs on
+  Ubuntu with Node 22 ([ci.yml](../../.github/workflows/ci.yml)); a Windows job
+  would exercise the platform-specific launcher and filesystem tests.
+- This is a risk-focused review, not an exhaustive security audit.

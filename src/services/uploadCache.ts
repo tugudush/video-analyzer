@@ -240,9 +240,22 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
         .toSorted((a, b) => b[1].savedAtMs - a[1].savedAtMs)
         .slice(0, this.maxEntries)
 
-      // Keep the in-memory view consistent with what was actually written.
+      // Publish what was written, then replay anything queued while the merge
+      // was in flight. A concurrent `set` would otherwise vanish from the live
+      // view — and a `delete` issued before the next flush would then be dropped
+      // because the entry was missing, letting the reference reappear.
       this.entries.clear()
       for (const [key, entry] of kept) this.entries.set(key, entry)
+      for (const operation of this.pending) {
+        if (operation.type === 'delete') {
+          this.entries.delete(operation.key)
+        } else {
+          this.entries.set(operation.key, {
+            ...operation.reference,
+            savedAtMs: this.nextSavedAt(),
+          })
+        }
+      }
 
       const payload: PersistedFile = {
         version: SCHEMA_VERSION,

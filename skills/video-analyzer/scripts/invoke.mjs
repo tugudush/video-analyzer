@@ -2,9 +2,9 @@
 /**
  * Skill launcher for video-analyzer.
  *
- * Locates the installed CLI, forwards a JSON payload without a shell, and
- * normalizes failures into a stable JSON envelope on stdout. The Skill calls
- * this script; it never starts or talks to the MCP server.
+ * Locates the installed CLI, forwards a JSON payload over stdin, and normalizes
+ * failures into a stable JSON envelope on stdout. The Skill calls this script; it
+ * never starts or talks to the MCP server.
  *
  * Usage:
  *   node invoke.mjs <operation> ['{"json":"input"}']
@@ -14,8 +14,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -55,7 +55,8 @@ async function resolveInvocation() {
   const repoRoot = path.resolve(HERE, '..', '..', '..')
   const localBuild = path.join(repoRoot, 'dist', 'cli.js')
   try {
-    await readFile(localBuild, { encoding: 'utf8', flag: 'r' })
+    const info = await stat(localBuild)
+    if (!info.isFile()) throw new Error('The checkout build is not a file.')
     return { command: process.execPath, baseArgs: [localBuild] }
   } catch {
     // Fall through to the globally installed binary.
@@ -72,11 +73,50 @@ function isBatchShim(command) {
   return /\.(cmd|bat)$/i.test(command)
 }
 
-function run(command, argv) {
+/**
+ * Whether an argument can pass through `cmd.exe` unchanged.
+ *
+ * A batch shim is spawned through the shell, which re-parses its `/c` line: `&`,
+ * `|`, `<`, `>`, `^`, `%`, and parentheses are operators there. Node only quotes
+ * an argument that contains whitespace, so such a value would divide the command
+ * line. Only operation names and flags need to reach the shell — the payload
+ * travels on stdin — so accepting just those avoids rebuilding cmd's quoting
+ * rules, which differ again inside quotes.
+ */
+function isShellSafeArg(arg) {
+  return /^[A-Za-z0-9_.:-]+$/.test(arg)
+}
+
+/**
+ * Run the CLI with the payload on stdin.
+ *
+ * The JSON is never a command-line argument: Windows limits a command line to
+ * roughly 32 KiB (far below the CLI's 1 MiB input limit), and staging it in a
+ * temporary file still put that path on the `cmd.exe` line, where a `&` or `%`
+ * in the temporary directory split or expanded it. Piped input carries the
+ * payload verbatim, and it can be streamed straight from `--json-file`.
+ */
+function run(command, argv, input) {
   return new Promise((resolve) => {
-    const child = spawn(command, argv, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    const finish = (code, extra) => {
+      if (settled) return
+      settled = true
+      resolve({ code, stdout, stderr: `${stderr}${extra ?? ''}` })
+    }
+
+    let child
+    try {
+      child = spawn(command, argv, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    } catch (error) {
+      // A synchronous spawn failure (for example ENAMETOOLONG) would otherwise
+      // escape as an uncaught exception and leave the caller without an envelope.
+      finish(1, `${error.message}\n`)
+      return
+    }
+
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk) => {
@@ -85,8 +125,22 @@ function run(command, argv) {
     child.stderr.on('data', (chunk) => {
       stderr += chunk
     })
-    child.on('error', (error) => resolve({ code: 1, stdout, stderr: `${stderr}${error.message}` }))
-    child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }))
+    // The CLI stops reading as soon as it rejects a payload (for example as
+    // oversized), so the resulting EPIPE is expected and must not escape.
+    child.stdin.on('error', () => undefined)
+    child.on('error', (error) => finish(1, `${error.message}\n`))
+    child.on('close', (code) => finish(code ?? 1))
+
+    if (input?.kind === 'file') {
+      const source = createReadStream(input.path)
+      source.on('error', (error) => {
+        child.kill()
+        finish(1, `${error.message}\n`)
+      })
+      source.pipe(child.stdin)
+      return
+    }
+    child.stdin.end(input?.kind === 'text' ? input.value : undefined)
   })
 }
 
@@ -124,75 +178,50 @@ for (let index = 0; index < rest.length; index += 1) {
 }
 
 if (payloadFile) {
+  const resolved = path.resolve(payloadFile)
   try {
-    payload = await readFile(path.resolve(payloadFile), 'utf8')
+    const info = await stat(resolved)
+    if (!info.isFile()) throw new Error('Not a file.')
+    // Resolved once here so the streamed payload and any later diagnostic name
+    // the same target.
+    payloadFile = resolved
   } catch (error) {
     await fail('INPUT_NOT_FOUND', `Could not read ${payloadFile}.`, error.message)
   }
 }
 
-/**
- * Send the payload to the CLI.
- *
- * `cmd.exe` re-parses the whole `/c` string, so a `&`, `|`, or `^` inside a path
- * or question becomes a shell operator and the JSON arrives mangled. Batch shims
- * therefore receive the payload through a temporary file instead of an argument;
- * the direct `node` paths keep the argument form.
- */
-const { command, baseArgs } = await resolveInvocation()
-const viaComSpec = isBatchShim(command)
-let payloadTempDir
-
-async function cleanupPayload() {
-  if (!payloadTempDir) return
-  const staging = payloadTempDir
-  payloadTempDir = undefined
-  await rm(staging, { recursive: true, force: true }).catch((error) => {
-    process.stderr.write(`Could not remove temporary directory ${staging}: ${error.message}\n`)
-  })
-}
-
-if (payload !== undefined) {
-  if (viaComSpec) {
-    try {
-      payloadTempDir = await mkdtemp(path.join(tmpdir(), 'video-analyzer-owned-'))
-      await writeFile(
-        path.join(payloadTempDir, '.video-analyzer-owner.json'),
-        JSON.stringify({ version: 1, pid: process.pid }),
-        { flag: 'wx', mode: 0o600 },
-      )
-      const payloadTempFile = path.join(payloadTempDir, 'input.json')
-      await writeFile(payloadTempFile, payload, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
-      forwarded.push('--input-file', payloadTempFile)
-    } catch (error) {
-      await cleanupPayload()
-      await fail('OUTPUT_FAILED', 'Could not stage the JSON payload for the CLI.', error.message)
-    }
-  } else {
-    forwarded.push('--input', payload)
-  }
-}
+/** What to send on stdin: the payload file untouched, the inline JSON, or nothing. */
+const input = payloadFile
+  ? { kind: 'file', path: payloadFile }
+  : payload !== undefined
+    ? { kind: 'text', value: payload }
+    : undefined
 
 const argv = [operation, ...forwarded]
+const { command, baseArgs } = await resolveInvocation()
+const viaComSpec = isBatchShim(command)
 
-try {
-  const result = viaComSpec
-    ? await run(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command, ...argv])
-    : await run(command, [...baseArgs, ...argv])
-
-  if (!result.stdout.trim()) {
-    await cleanupPayload()
-    await fail(
-      'INTERNAL',
-      'The video-analyzer CLI produced no output.',
-      result.stderr.trim() ||
-        'Install the CLI (npm i -g video-analyzer), or set VIDEO_ANALYZER_CLI_PATH to dist/cli.js.',
-    )
-  }
-
-  process.stdout.write(result.stdout)
-  if (result.stderr) process.stderr.write(result.stderr)
-  process.exitCode = result.code
-} finally {
-  await cleanupPayload()
+if (viaComSpec && !argv.every(isShellSafeArg)) {
+  await fail(
+    'INVALID_INPUT',
+    'A Windows batch shim cannot carry these arguments safely.',
+    'Pass only the operation name and its flags; put request data in the JSON payload.',
+  )
 }
+
+const result = viaComSpec
+  ? await run(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', command, ...argv], input)
+  : await run(command, [...baseArgs, ...argv], input)
+
+if (!result.stdout.trim()) {
+  await fail(
+    'INTERNAL',
+    'The video-analyzer CLI produced no output.',
+    result.stderr.trim() ||
+      'Install the CLI (npm i -g video-analyzer), or set VIDEO_ANALYZER_CLI_PATH to dist/cli.js.',
+  )
+}
+
+process.stdout.write(result.stdout)
+if (result.stderr) process.stderr.write(result.stderr)
+process.exitCode = result.code

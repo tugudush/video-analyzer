@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { FileUploadReferenceStore, credentialScope } from '../../src/services/uploadCache.js'
+import {
+  FileUploadReferenceStore,
+  credentialScope,
+  type UploadReference,
+} from '../../src/services/uploadCache.js'
 import { createLogger } from '../../src/utils/logger.js'
 
 const SCOPE = 'scope-a'
@@ -177,6 +181,63 @@ describe('FileUploadReferenceStore', () => {
     await store.flush()
 
     expect((await openStore(dir)).get('content:abcd')).toBeDefined()
+  })
+
+  /**
+   * A merge that is already writing must not erase an update queued meanwhile.
+   * It used to vanish from the live view, so a following `delete` found nothing
+   * to remove and the reference reappeared after the next process reloaded it.
+   */
+  it('keeps operations queued while an earlier write is in flight', async () => {
+    const store = await openStore(dir)
+    const hook = store as unknown as {
+      readForMerge(): Promise<Map<string, UploadReference>>
+    }
+    const readForMerge = hook.readForMerge.bind(store)
+    let firstMerge!: () => void
+    let secondMerge!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      firstMerge = resolve
+    })
+    const secondStarted = new Promise<void>((resolve) => {
+      secondMerge = resolve
+    })
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve
+    })
+
+    let calls = 0
+    hook.readForMerge = async () => {
+      calls += 1
+      if (calls === 1) {
+        firstMerge()
+        await firstGate
+      } else {
+        secondMerge()
+        await secondGate
+      }
+      return readForMerge()
+    }
+
+    store.set('content:a', reference('files/a'))
+    await firstStarted
+    store.set('content:b', reference('files/b'))
+    releaseFirst()
+    // The first batch has published by the time the queued write reaches its merge.
+    await secondStarted
+    expect(store.get('content:b')).toBeDefined()
+
+    releaseSecond()
+    await store.flush()
+    store.delete('content:b')
+    await store.flush()
+
+    expect((await openStore(dir)).get('content:b')).toBeUndefined()
   })
 
   it('skips the write while a lock is held, then retries it', async () => {

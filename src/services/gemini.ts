@@ -319,6 +319,23 @@ function requestTimeout(
 }
 
 /**
+ * Whether a `getFile` failure says the referenced file is gone.
+ *
+ * Only a definitive "no such file" may be read as a cache miss. Quota,
+ * authentication, and transport failures say nothing about the reference, and
+ * treating them as a miss would discard it and start another upload that is
+ * likely to fail the same way — spending bandwidth and hiding the real cause.
+ */
+function isMissingFileError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const status = (error as { status?: unknown }).status
+  if (status === 404) return true
+  const code = (error as { code?: unknown }).code
+  if (code === 404 || code === 'NOT_FOUND') return true
+  return /not[ _-]?found|no such file/i.test(error.message)
+}
+
+/**
  * Shared Gemini media pipeline: one upload → poll → reuse implementation used by
  * every Gemini-backed operation.
  */
@@ -429,8 +446,9 @@ export class GeminiMediaService {
    *
    * The stored file name is only a hint: the provider is asked for the file and
    * anything other than an `ACTIVE` file of the expected type is a miss. A
-   * timeout or cancellation is rethrown rather than turned into a miss, because
-   * re-uploading would spend the budget again and hide the stall.
+   * timeout, cancellation, or provider failure is rethrown rather than turned
+   * into a miss, because re-uploading would spend the budget again and hide the
+   * actual problem.
    */
   private async readPersisted(
     key: string,
@@ -479,8 +497,20 @@ export class GeminiMediaService {
       // A timeout or cancellation is about this call, not about the cached file:
       // re-uploading would spend the budget again and hide the stall.
       if (error instanceof VideoAnalyzerError) throw error
-      this.logger.debug(`Could not confirm the cached Gemini file: ${String(error)}`)
-      return null
+      // A provider error that does not say the file is gone leaves the
+      // reference valid, so it is reported instead of being mistaken for a miss.
+      if (isMissingFileError(error)) {
+        this.logger.debug(`The cached Gemini file no longer exists: ${name}`)
+        return null
+      }
+      throw new VideoAnalyzerError(
+        'GEMINI_REQUEST_FAILED',
+        'Could not confirm the cached Gemini file.',
+        {
+          hint: 'Check your API key, quota, and network access. The cached upload was kept, so a retry can still reuse it.',
+          cause: error,
+        },
+      )
     }
   }
 
