@@ -13,12 +13,12 @@ describe('parseDotEnv', () => {
       'export GEMINI_API_KEY=abc',
       '   ',
       '   # indented comment',
-      'GEMINI_MODEL=gemini-3.8-flash',
+      'GEMINI_MODEL=gemini-4-hydrogen',
     ].join('\n')
 
     expect(parseDotEnv(source)).toEqual({
       GEMINI_API_KEY: 'abc',
-      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_MODEL: 'gemini-4-hydrogen',
     })
   })
 

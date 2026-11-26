@@ -7,10 +7,10 @@ import { loadDotEnvInto } from './utils/dotenv.js'
 /**
  * Default Gemini model. Override with `GEMINI_MODEL`.
  *
- * This is a multimodal Flash model that understands video and audio natively,
- * which is the only AI capability this toolkit needs.
+ * Gemini 4 Hydrogen understands video, audio, and images natively and is the
+ * recommended upgrade from Gemini 3.8 Flash.
  */
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash'
+export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen'
 
 export interface Config {
   geminiApiKey: string | undefined

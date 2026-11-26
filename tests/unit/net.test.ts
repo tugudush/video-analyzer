@@ -274,4 +274,35 @@ describe('downloadToFile failure classification', () => {
       /example-secret/,
     )
   })
+
+  it('rejects redirect chains past MAX_REDIRECTS without fetching or validating the next hop', async () => {
+    let requests = 0
+    const server = createServer((req, res) => {
+      requests += 1
+      res.writeHead(302, {
+        location:
+          requests <= 5
+            ? `http://127.0.0.1:${port}/hop-${requests}`
+            : 'http://127.0.0.1:1/never-validated',
+      })
+      res.end()
+    })
+    servers.push(server)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('server did not bind a port')
+    const port = address.port
+
+    await expect(
+      downloadToFile(`http://127.0.0.1:${port}/start`, await destination(), {
+        maxBytes: 100,
+        timeoutMs: 5_000,
+        allowPrivateHosts: true,
+      }),
+    ).rejects.toMatchObject({
+      code: 'DOWNLOAD_FAILED',
+      message: expect.stringContaining('Too many redirects'),
+    })
+    expect(requests).toBe(6)
+  })
 })

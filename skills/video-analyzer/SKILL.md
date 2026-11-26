@@ -1,6 +1,6 @@
 ---
 name: video-analyzer
-description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, and extract frames. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", or "grab a frame at 30s". Works on local paths, file:// URIs, and direct http(s) media URLs. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
+description: 'Analyze video and audio files with Gemini and local FFmpeg: answer questions about content, summarize, find when something happens, transcribe speech, read metadata, and extract frames. Use when the user asks about a video file, screen recording, podcast, or audio clip — including "what happens in this video", "summarize this recording", "when does X occur", "transcribe this audio", "what resolution is this", or "grab a frame at 30s". Works on local paths, file:// URIs, direct http(s) media URLs, and platform page URLs via yt-dlp. Runs through a local CLI; no MCP server or API-specific setup is required beyond GEMINI_API_KEY for AI operations.'
 argument-hint: 'A video path or URL plus what you want to know about it'
 ---
 

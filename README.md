@@ -151,10 +151,22 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 
 2. Provide `GEMINI_API_KEY` to the process that runs the agent. The launcher inherits its parent environment, so set it wherever your agent runs commands.
 
-   **Windows** — either the Environment Variables dialog (_Win+R_ → `sysdm.cpl` → Advanced → Environment Variables → **User variables** → New, name `GEMINI_API_KEY`), or PowerShell writing that same user variable:
+   **Windows** — either the Environment Variables dialog (_Win+R_ → `sysdm.cpl` → Advanced → Environment Variables → **User variables** → New, name `GEMINI_API_KEY`), or PowerShell or Git Bash writing that same user variable:
 
    ```powershell
    [Environment]::SetEnvironmentVariable('GEMINI_API_KEY', 'your-key', 'User')
+   ```
+
+   Git Bash, same User variable:
+
+   ```bash
+   setx GEMINI_API_KEY "your-key"
+   ```
+
+   Git Bash only (affects shells started from Git Bash, not VS Code or PowerShell):
+
+   ```bash
+   echo 'export GEMINI_API_KEY="your-key"' >> ~/.bashrc
    ```
 
    **macOS / Linux:**
@@ -181,6 +193,8 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 
 3. Point the launcher at your build if the CLI is neither in this repo nor on `PATH`:
 
+   **macOS / Linux:**
+
    ```bash
    export VIDEO_ANALYZER_CLI_PATH=/absolute/path/to/video-analyzer/dist/cli.js
    ```
@@ -189,6 +203,12 @@ The Skill lives in [`skills/video-analyzer`](skills/video-analyzer) and runs the
 
    ```powershell
    [Environment]::SetEnvironmentVariable('VIDEO_ANALYZER_CLI_PATH', 'C:\dev\video-analyzer\dist\cli.js', 'User')
+   ```
+
+   Git Bash, same User variable (use a Windows-style path, since Node on Windows cannot open `/c/...` paths):
+
+   ```bash
+   setx VIDEO_ANALYZER_CLI_PATH 'C:\dev\video-analyzer\dist\cli.js'
    ```
 
 4. Invoke it:
@@ -423,7 +443,7 @@ exit.
 | Variable                             | Default              | Purpose                                                                                                                    |
 | ------------------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                                                 |
-| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                                     |
+| `GEMINI_MODEL`                       | `gemini-4-hydrogen`  | Model for all AI calls                                                                                                     |
 | `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for `extract_frames` (scene capped at 200); `0` keeps only the 500-frame hard cap                             |
 | `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                                                 |
 | `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation; the remaining upload budget can shorten it      |

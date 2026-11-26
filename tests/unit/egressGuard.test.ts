@@ -1,8 +1,23 @@
 import { createServer as createHttpServer } from 'node:http'
 import { connect, createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { gzipSync } from 'node:zlib'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { startEgressGuard, type EgressGuard } from '../../src/services/egressGuard.js'
 import { createLogger } from '../../src/utils/logger.js'
+
+const dnsMock = vi.hoisted(() => ({
+  override: undefined as Array<{ address: string; family: number }> | undefined,
+}))
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: async (...args: Parameters<typeof actual.lookup>) => {
+      if (dnsMock.override) return dnsMock.override
+      return actual.lookup(...args)
+    },
+  }
+})
 
 const logger = createLogger('silent')
 
@@ -73,6 +88,7 @@ describe('egress guard', () => {
   const extraSockets: Socket[] = []
 
   afterEach(async () => {
+    dnsMock.override = undefined
     await guard?.close()
     guard = undefined
     for (const socket of extraSockets.splice(0)) socket.destroy()
@@ -166,5 +182,73 @@ describe('egress guard', () => {
 
     expect(tunnelled).toContain('200 Connection Established')
     expect(tunnelled).toContain('hello')
+  })
+
+  it('requests identity encoding and strips forced content-encoding on plain HTTP relays', async () => {
+    let seenAcceptEncoding: string | string[] | undefined
+    const server = createHttpServer((req, res) => {
+      seenAcceptEncoding = req.headers['accept-encoding']
+      const compressed = gzipSync(Buffer.from('decompressed payload'))
+      res.writeHead(200, {
+        'content-type': 'text/plain',
+        'content-encoding': 'gzip',
+        'content-length': String(compressed.byteLength),
+      })
+      res.end(compressed)
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as AddressInfo).port
+    targets.push({ port, close: () => new Promise((resolve) => server.close(() => resolve())) })
+
+    guard = await startEgressGuard({ allowPrivateHosts: true, logger })
+    const response = await plainProxyRequest(guard.port, `http://127.0.0.1:${port}/page`)
+
+    expect(seenAcceptEncoding).toBe('identity')
+    expect(response).toMatch(/^HTTP\/1\.1 200/)
+    expect(response.toLowerCase()).not.toContain('content-encoding: gzip')
+    expect(response).toContain('decompressed payload')
+  })
+
+  it('falls back across validated CONNECT addresses when the first address refuses connection', async () => {
+    const echo = createTcpServer((socket) => {
+      extraSockets.push(socket)
+      socket.pipe(socket)
+    })
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve))
+    const echoPort = (echo.address() as AddressInfo).port
+    targets.push({
+      port: echoPort,
+      close: () => new Promise((resolve) => echo.close(() => resolve())),
+    })
+
+    // First address (::1) is not listening on echoPort; fallback reaches 127.0.0.1.
+    dnsMock.override = [
+      { address: '::1', family: 6 },
+      { address: '127.0.0.1', family: 4 },
+    ]
+
+    guard = await startEgressGuard({ allowPrivateHosts: true, logger })
+    const proxyPort = guard.port
+    const tunnelled = await new Promise<string>((resolve, reject) => {
+      const socket = connect(proxyPort, '127.0.0.1')
+      let response = ''
+      socket.setEncoding('utf8')
+      socket.once('connect', () => {
+        socket.write(`CONNECT dualstack.test:${echoPort} HTTP/1.1\r\n\r\n`)
+      })
+      socket.on('data', (chunk: string) => {
+        response += chunk
+        if (response.includes('200 Connection Established') && !response.includes('fallback-ok')) {
+          socket.write('fallback-ok')
+        } else if (response.includes('fallback-ok')) {
+          socket.destroy()
+          resolve(response)
+        }
+      })
+      socket.once('error', reject)
+    })
+
+    expect(tunnelled).toContain('200 Connection Established')
+    expect(tunnelled).toContain('fallback-ok')
   })
 })

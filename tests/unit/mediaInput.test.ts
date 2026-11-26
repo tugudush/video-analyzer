@@ -485,6 +485,50 @@ describe('remote media input policy', () => {
     }
   })
 
+  it('retries the original URL with yt-dlp when an HTML redirect lands on an unsupported page', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: 'https://example.com/login' } }),
+      )
+      .mockResolvedValueOnce(
+        new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } }),
+      )
+
+    let calls = 0
+    mocks.execFile.mockImplementation(
+      (_binary: string, args: string[], _options: unknown, callback?: unknown) => {
+        calls += 1
+        if (calls === 1) {
+          if (typeof callback === 'function')
+            callback(
+              Object.assign(new Error('failed'), { code: 1 }),
+              '',
+              'ERROR: Unsupported URL: https://example.com/login',
+            )
+          return
+        }
+        const outputIndex = args.indexOf('--output')
+        const template = outputIndex >= 0 ? args[outputIndex + 1] : undefined
+        if (template) writeFileSync(template.replace('%(ext)s', 'mp4'), 'authenticated media')
+        if (typeof callback === 'function') callback(null, '', '')
+      },
+    )
+
+    const media = await resolveMediaInput('https://example.com/watch/123', config)
+    try {
+      expect(await readFile(media.path, 'utf8')).toBe('authenticated media')
+    } finally {
+      await media.cleanup()
+    }
+    expect(mocks.execFile).toHaveBeenCalledTimes(2)
+    expect((mocks.execFile.mock.calls[0]?.[1] as string[] | undefined)?.at(-1)).toBe(
+      'https://example.com/login',
+    )
+    expect((mocks.execFile.mock.calls[1]?.[1] as string[] | undefined)?.at(-1)).toBe(
+      'https://example.com/watch/123',
+    )
+  })
+
   it('retains the leader download until a shared upload finishes after cancellation', async () => {
     fetchMock.mockImplementation(
       async () => new Response('media', { headers: { 'content-type': 'video/mp4' } }),

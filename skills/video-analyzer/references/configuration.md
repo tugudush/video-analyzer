@@ -86,9 +86,9 @@ reused. Local temporary-file cleanup does not delete the provider's copy.
 
 ## Model
 
-| Variable       | Default            | Purpose                                                       |
-| -------------- | ------------------ | ------------------------------------------------------------- |
-| `GEMINI_MODEL` | `gemini-3.8-flash` | Model ID for all AI calls. Must handle video and audio input. |
+| Variable       | Default             | Purpose                                                       |
+| -------------- | ------------------- | ------------------------------------------------------------- |
+| `GEMINI_MODEL` | `gemini-4-hydrogen` | Model ID for all AI calls. Must handle video and audio input. |
 
 If the configured model is unavailable for your account, the API error is surfaced
 verbatim. No silent model substitution happens.

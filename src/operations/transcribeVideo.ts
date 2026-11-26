@@ -26,6 +26,8 @@ export const transcribeVideoInput = z.object({
     ),
   outputPath: z
     .string()
+    .trim()
+    .min(1)
     .optional()
     .describe(
       'Optional file path (local path or file:// URI) to also write the transcript to. Missing parent directories are created. The source media is never overwritten.',

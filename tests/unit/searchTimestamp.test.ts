@@ -83,6 +83,14 @@ describe('parseTimestampMatches', () => {
     expect(parseTimestampMatches('MATCH 10 to 5 — backwards range')[0]?.endSeconds).toBeUndefined()
     expect(parseTimestampMatches('MATCH 7 7 — zero length')[0]?.endSeconds).toBeUndefined()
   })
+
+  it('does not misparse MM:SS timestamps as plain seconds', () => {
+    expect(parseTimestampMatches('MATCH 01:23 — speaker enters')).toEqual([])
+    expect(parseTimestampMatches('MATCH 01:23 01:30 — speaker enters')).toEqual([])
+    expect(parseTimestampMatches('MATCH 12: login form appears')).toEqual([
+      { startSeconds: 12, description: 'login form appears' },
+    ])
+  })
 })
 
 function createService(reply: string): GeminiMediaService {

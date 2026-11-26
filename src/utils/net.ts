@@ -522,6 +522,13 @@ export async function downloadToFile(
             `Redirect without a Location header from ${redactedUrl(current)}`,
           )
         }
+        if (redirects >= MAX_REDIRECTS) {
+          throw new VideoAnalyzerError(
+            'DOWNLOAD_FAILED',
+            `Too many redirects while fetching ${redactedUrl(current)}`,
+            { hint: `More than ${MAX_REDIRECTS} redirects were followed.` },
+          )
+        }
         let next: URL
         try {
           next = new URL(location, current)
