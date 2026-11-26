@@ -423,7 +423,7 @@ exit.
 | Variable                             | Default              | Purpose                                                                                                                    |
 | ------------------------------------ | -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `GEMINI_API_KEY`                     | —                    | Required for AI operations                                                                                                 |
-| `GEMINI_MODEL`                       | `gemini-3.8-flash`   | Model for all AI calls                                                                                                     |
+| `GEMINI_MODEL`                       | `gemini-4-hydrogen`  | Model for all AI calls                                                                                                     |
 | `VIDEO_ANALYZER_MAX_FRAMES`          | `100`                | Frame budget for `extract_frames` (scene capped at 200); `0` keeps only the 500-frame hard cap                             |
 | `VIDEO_ANALYZER_DOWNLOAD_MAX_MB`     | `2048`               | Remote download size limit                                                                                                 |
 | `VIDEO_ANALYZER_REQUEST_TIMEOUT_MS`  | `300000`             | Deadline for each Gemini call: upload request, status poll, or generation; the remaining upload budget can shorten it      |

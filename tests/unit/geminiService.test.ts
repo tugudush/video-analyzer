@@ -746,3 +746,42 @@ describe('GoogleGenAiApi file parts', () => {
     })
   })
 })
+
+describe('GoogleGenAiApi sampling parameters', () => {
+  const parts = [{ kind: 'text' as const, text: 'hi' }]
+
+  it.each(['gemini-4-hydrogen', 'models/gemini-4-hydrogen'])(
+    'omits temperature for %s',
+    async (model) => {
+      sdk.generateContent.mockResolvedValueOnce({
+        text: 'ok',
+        candidates: [{ finishReason: 'STOP' }],
+      })
+      await new GoogleGenAiApi('test').generateContent({
+        model,
+        parts,
+        temperature: 0.2,
+      })
+      const request = sdk.generateContent.mock.calls.at(-1)?.[0] as {
+        config?: Record<string, unknown>
+      }
+      expect(request.config?.temperature).toBeUndefined()
+    },
+  )
+
+  it('forwards temperature for earlier Gemini models', async () => {
+    sdk.generateContent.mockResolvedValueOnce({
+      text: 'ok',
+      candidates: [{ finishReason: 'STOP' }],
+    })
+    await new GoogleGenAiApi('test').generateContent({
+      model: 'gemini-3.8-flash',
+      parts,
+      temperature: 0.2,
+    })
+    const request = sdk.generateContent.mock.calls.at(-1)?.[0] as {
+      config?: Record<string, unknown>
+    }
+    expect(request.config?.temperature).toBe(0.2)
+  })
+})

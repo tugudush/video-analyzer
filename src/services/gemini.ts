@@ -54,6 +54,12 @@ export interface GeminiApi {
   ): Promise<string>
 }
 
+function supportsSamplingTemperature(model: string): boolean {
+  // Gemini 4 models fix temperature at 1.0 and Google's migration guide
+  // recommends omitting sampling parameters from requests.
+  return !/^(?:models\/)?gemini-4(?:$|-)/i.test(model.trim())
+}
+
 /**
  * Translate request bounds into SDK config so the underlying HTTP call is
  * cancelled and timed out instead of merely being abandoned by the caller.
@@ -207,7 +213,9 @@ export class GoogleGenAiApi implements GeminiApi {
 
     const config = {
       ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
-      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      ...(params.temperature !== undefined && supportsSamplingTemperature(params.model)
+        ? { temperature: params.temperature }
+        : {}),
       ...sdkRequestConfig(params),
     }
 
