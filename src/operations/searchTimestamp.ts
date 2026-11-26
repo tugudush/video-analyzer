@@ -47,7 +47,11 @@ export function parseTimestampMatches(text: string): TimestampMatch[] {
         /^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*[-–—:]\s*(.*)$/i,
       )
     if (!match) {
-      const single = line.match(/^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)\s*(?:[-–—:]\s*)?(.*)$/i)
+      // Require whitespace, dash, end-of-line, or `:` not followed by a digit so
+      // `MATCH 01:23 — ...` is never misparsed as `startSeconds: 1`.
+      const single = line.match(
+        /^[-*]?\s*MATCH\s+(\d+(?:\.\d+)?)(?=\s|[-–—]|:(?!\d)|$)\s*(?:[-–—:]\s*)?(.*)$/i,
+      )
       if (single) {
         const start = Number(single[1])
         if (Number.isFinite(start)) {

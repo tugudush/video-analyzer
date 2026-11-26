@@ -4,6 +4,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../../src/config.js'
+import { executeOperation } from '../../src/operations/execute.js'
 import { transcribeVideoOperation } from '../../src/operations/transcribeVideo.js'
 import { GeminiMediaService, GoogleGenAiApi, type GeminiApi } from '../../src/services/gemini.js'
 import { createLogger } from '../../src/utils/logger.js'
@@ -356,5 +357,21 @@ describe('transcribe_video output target', () => {
     expect(result.summary).toBe(transcript)
     expect(result.data).toMatchObject({ noSpeech: false, outputWritten: true })
     expect(await readFile(target, 'utf8')).toBe(`${transcript}\n`)
+  })
+
+  it.each(['', '   '])('rejects blank outputPath %j via schema validation', async (blank) => {
+    const { api, service } = createFakeGemini()
+    await expect(
+      executeOperation(
+        transcribeVideoOperation,
+        { videoPath: source, outputPath: blank },
+        loadConfig({}),
+        { logger: createLogger('silent'), geminiService: service },
+      ),
+    ).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      message: expect.stringContaining('outputPath'),
+    })
+    expect(api.uploadFile).not.toHaveBeenCalled()
   })
 })

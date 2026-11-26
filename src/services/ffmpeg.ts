@@ -449,6 +449,36 @@ export async function extractFramesAtInterval(
   }
 }
 
+async function getVideoStreamDuration(
+  filePath: string,
+  videoStreamIndex: number,
+  config: Config,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  try {
+    const { stdout } = await run(
+      config.ffprobePath,
+      [
+        '-v',
+        'error',
+        '-select_streams',
+        String(videoStreamIndex),
+        '-show_entries',
+        'stream=duration',
+        '-of',
+        'json',
+        filePath,
+      ],
+      FFPROBE_TIMEOUT_MS,
+      signal,
+    )
+    const parsed = JSON.parse(stdout) as { streams?: Array<{ duration?: unknown }> }
+    return toNumber(parsed.streams?.[0]?.duration)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Extract the first frame at or after each requested timestamp. If the seek
  * reaches EOF, sample the final frame instead.
@@ -464,6 +494,51 @@ export async function extractFramesAtTimestamps(
   options: FrameExtractionOptions,
 ): Promise<string[]> {
   const results: string[] = []
+  let cachedStreamDuration: number | undefined | null = null
+
+  const runEofFallback = async (
+    timestamp: number,
+    target: string,
+    seekStart: number,
+    seekFailure: unknown,
+  ): Promise<void> => {
+    const relative = Math.max(0, timestamp - seekStart)
+    try {
+      await run(
+        config.ffmpegPath,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          ...(seekStart > 0 ? ['-ss', seekStart.toFixed(9)] : []),
+          '-i',
+          filePath,
+          '-map',
+          videoMap(options),
+          '-vf',
+          `tpad=stop_mode=clone:stop_duration=${(relative + 1).toFixed(9)},fps=1000:start_time=${relative.toFixed(9)}:round=near,${scaleFilter(options)}`,
+          '-frames:v',
+          '1',
+          '-q:v',
+          '3',
+          target,
+        ],
+        FFMPEG_TIMEOUT_MS,
+        options.signal,
+      )
+    } catch (error) {
+      if (
+        seekFailure &&
+        error instanceof VideoAnalyzerError &&
+        error.code === 'MEDIA_PROCESSING_FAILED' &&
+        error.details?.['timeoutMs'] === undefined
+      ) {
+        throw seekFailure
+      }
+      throw error
+    }
+  }
 
   for (const [index, timestamp] of timestamps.entries()) {
     if (!Number.isFinite(timestamp) || timestamp < 0) {
@@ -506,41 +581,29 @@ export async function extractFramesAtTimestamps(
 
     let info = await stat(target).catch(() => null)
     if (!info || info.size === 0) {
-      try {
-        await run(
-          config.ffmpegPath,
-          [
-            '-hide_banner',
-            '-loglevel',
-            'error',
-            '-y',
-            '-i',
+      if (cachedStreamDuration === null) {
+        cachedStreamDuration =
+          (await getVideoStreamDuration(
             filePath,
-            '-map',
-            videoMap(options),
-            '-vf',
-            `tpad=stop_mode=clone:stop_duration=${(timestamp + 1).toFixed(9)},fps=1000:start_time=${timestamp.toFixed(9)}:round=near,${scaleFilter(options)}`,
-            '-frames:v',
-            '1',
-            '-q:v',
-            '3',
-            target,
-          ],
-          FFMPEG_TIMEOUT_MS,
-          options.signal,
-        )
-      } catch (error) {
-        if (
-          seekFailure &&
-          error instanceof VideoAnalyzerError &&
-          error.code === 'MEDIA_PROCESSING_FAILED' &&
-          error.details?.['timeoutMs'] === undefined
-        ) {
-          throw seekFailure
-        }
-        throw error
+            options.videoStreamIndex ?? 0,
+            config,
+            options.signal,
+          )) ?? undefined
       }
+      // Jump near the end of the video stream when its duration is known so long
+      // clips with trailing audio do not decode from t=0.
+      const seekStart =
+        cachedStreamDuration !== undefined && cachedStreamDuration > 2
+          ? Math.max(0, Math.min(timestamp, cachedStreamDuration) - 2)
+          : 0
+
+      await runEofFallback(timestamp, target, seekStart, seekFailure)
       info = await stat(target).catch(() => null)
+
+      if ((!info || info.size === 0) && seekStart > 0) {
+        await runEofFallback(timestamp, target, 0, seekFailure)
+        info = await stat(target).catch(() => null)
+      }
     } else if (seekFailure) {
       throw seekFailure
     }

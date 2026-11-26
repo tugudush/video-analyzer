@@ -198,12 +198,26 @@ async function resolveDirect(
 
     if (!returnedMedia && pageLike) {
       // A platform page (HTML, JSON, …) rather than the media itself. The user
-      // asked for what is behind it, so hand the URL to yt-dlp. The probe
-      // response is discarded and the downloaded file replaces it.
-      const platform = await downloadFromPlatform(result.finalUrl, tempDir, config, {
+      // asked for what is behind it, so hand the URL to yt-dlp. If the probe
+      // redirected to a login/consent interstitial, retry the original URL so
+      // yt-dlp can apply cookies or impersonation directly.
+      const downloadOpts: Parameters<typeof downloadFromPlatform>[3] = {
         ...(opts.signal ? { signal: opts.signal } : {}),
         ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
-      })
+      }
+      let platform: PlatformDownload
+      try {
+        platform = await downloadFromPlatform(result.finalUrl, tempDir, config, downloadOpts)
+      } catch (platformError) {
+        if (
+          result.finalUrl === url ||
+          !(platformError instanceof VideoAnalyzerError) ||
+          (platformError.code !== 'UNSUPPORTED_INPUT' && platformError.code !== 'DOWNLOAD_FAILED')
+        ) {
+          throw platformError
+        }
+        platform = await downloadFromPlatform(url, tempDir, config, downloadOpts)
+      }
       await rm(destination, { force: true })
       return buildResolved(
         platform.path,

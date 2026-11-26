@@ -31,6 +31,60 @@ export interface SnapshotOptions {
 }
 
 /**
+ * Compute the SHA-256 digest of a local file without copying it to disk.
+ *
+ * Used to check the upload cache before creating a snapshot copy; rejects a
+ * file that changes while it is being read.
+ */
+export async function hashLocalFile(
+  sourcePath: string,
+  options: Pick<SnapshotOptions, 'signal'> = {},
+): Promise<string> {
+  const before = await stat(sourcePath).catch((error: unknown) => {
+    throw new VideoAnalyzerError('INPUT_NOT_FOUND', `Could not read ${sourcePath}.`, {
+      cause: error,
+    })
+  })
+
+  const hash = createHash('sha256')
+  let bytesRead = 0
+  const stream = createReadStream(sourcePath)
+
+  try {
+    await pipeline(
+      stream,
+      async (source: AsyncIterable<Buffer>) => {
+        for await (const chunk of source) {
+          bytesRead += chunk.byteLength
+          hash.update(chunk)
+        }
+      },
+      options.signal ? { signal: options.signal } : {},
+    )
+  } catch (error) {
+    if (options.signal?.aborted) throw operationCancelled({ cause: error })
+    throw new VideoAnalyzerError('MEDIA_PROCESSING_FAILED', `Could not read ${sourcePath}.`, {
+      hint: 'Check that the file is readable and not locked by another process.',
+      cause: error,
+    })
+  }
+
+  const after = await stat(sourcePath)
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || bytesRead !== before.size) {
+    throw new VideoAnalyzerError(
+      'MEDIA_PROCESSING_FAILED',
+      'The media file changed while it was being read.',
+      {
+        hint: 'Wait for the file to finish being written (an active download or export) and retry.',
+        details: { sourcePath },
+      },
+    )
+  }
+
+  return hash.digest('hex')
+}
+
+/**
  * Copy `sourcePath` into an owned temporary directory while hashing it.
  *
  * A file that changes during the copy is rejected rather than uploaded: the

@@ -297,4 +297,32 @@ describe('runCli', () => {
     dispose?.()
     expect(process.listeners('SIGINT').length).toBe(before)
   })
+
+  it('rejects combining --input and --input-file', async () => {
+    const { io, stdoutText } = capture()
+    const code = await runCli(
+      ['get_video_info', '--input', '{"videoPath":"a.mp4"}', '--input-file', 'args.json'],
+      io,
+      {},
+    )
+    expect(code).toBe(1)
+    expect(JSON.parse(stdoutText())).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_INPUT', message: expect.stringContaining('not both') },
+    })
+  })
+
+  it('rejects unexpected positional arguments on operation commands', async () => {
+    const { io, stdoutText } = capture()
+    const code = await runCli(
+      ['get_video_info', 'extra-arg', '--input', '{"videoPath":"a.mp4"}'],
+      io,
+      {},
+    )
+    expect(code).toBe(1)
+    expect(JSON.parse(stdoutText())).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_INPUT', message: expect.stringContaining('extra-arg') },
+    })
+  })
 })

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { requireGeminiApiKey, type Config } from '../config.js'
-import { GeminiMediaService } from '../services/gemini.js'
+import { GeminiMediaService, type GeminiFileHandle } from '../services/gemini.js'
 import { getMediaMetadata, type MediaMetadata } from '../services/ffmpeg.js'
-import { createLocalSnapshot } from '../services/localSnapshot.js'
+import { createLocalSnapshot, hashLocalFile } from '../services/localSnapshot.js'
 import { classifyAiInput, isDirectUrlRejection } from '../services/mediaRouting.js'
 import { resolveMediaInput, type ResolvedMedia } from '../services/mediaInput.js'
 import { FileUploadReferenceStore, credentialScope } from '../services/uploadCache.js'
@@ -172,6 +172,7 @@ interface ResolvedAiMedia {
   mimeType: string | undefined
   cacheKey?: string
   geminiUrl?: string
+  cachedHandle?: GeminiFileHandle
   retainSource?: () => () => Promise<void>
   cleanup(): Promise<void>
 }
@@ -207,6 +208,33 @@ async function resolveAiMedia(input: string, ctx: OperationContext): Promise<Res
   })
 
   if (media.source === 'local') {
+    const service = getGeminiService(ctx)
+    try {
+      // On a cache hit, hash in-place and reuse the active handle without
+      // copying the local file to tmpdir(). Only cache misses create a
+      // snapshot so uploaded bytes always match the content-hashed cache key.
+      if (await service.hasPotentialCacheHits()) {
+        const sha256 = await hashLocalFile(media.path, ctx.signal ? { signal: ctx.signal } : {})
+        const key = `local:${media.mimeType}:${sha256}`
+        const cachedHandle = await service.findReusableUpload(key, ctx.signal)
+        if (cachedHandle) {
+          ctx.onProgress?.('Reusing previously uploaded Gemini file.')
+          const metadata = await getMediaMetadata(media.path, ctx.config, ctx.signal)
+          return {
+            source: 'local',
+            metadata,
+            path: media.path,
+            mimeType: media.mimeType,
+            cachedHandle,
+            cleanup: media.cleanup,
+          }
+        }
+      }
+    } catch (error) {
+      await media.cleanup()
+      throw error
+    }
+
     // A mutable path cannot identify its contents. The snapshot makes the hash
     // and the upload read the same bytes, and it is what gets probed.
     let snapshot
@@ -300,6 +328,14 @@ async function generateFor(
       ctx.logger.info('Gemini could not use the media URL directly; downloading instead.')
       return generateFromDownload(input, ctx, common)
     }
+  }
+
+  if (resolved.cachedHandle) {
+    const text = await service.generateWithHandle({
+      handle: resolved.cachedHandle,
+      ...common,
+    })
+    return { text, source: resolved.source, metadata: resolved.metadata }
   }
 
   if (!resolved.path) {

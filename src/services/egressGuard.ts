@@ -54,13 +54,21 @@ function filterHeaders(headers: NodeJS.Dict<string | string[]>): Record<string, 
     if (HOP_BY_HOP.has(lower) || lower === 'host' || lower === 'accept-encoding') continue
     result[lower] = Array.isArray(value) ? value.join(', ') : value
   }
+  // `undici.fetch` injects gzip/br when `accept-encoding` is omitted and
+  // transparently decompresses the body while preserving `content-encoding` and
+  // `content-length` headers, which would corrupt plain-HTTP proxied streams.
+  result['accept-encoding'] = 'identity'
   return result
 }
 
 function responseHeaders(headers: Headers): Record<string, string | string[]> {
+  const encoding = headers.get('content-encoding')?.trim().toLowerCase()
+  const decodedByFetch = Boolean(encoding && encoding !== 'identity')
   const result: Record<string, string | string[]> = {}
   for (const [name, value] of headers.entries()) {
-    if (HOP_BY_HOP.has(name.toLowerCase())) continue
+    const lower = name.toLowerCase()
+    if (HOP_BY_HOP.has(lower)) continue
+    if (decodedByFetch && (lower === 'content-encoding' || lower === 'content-length')) continue
     result[name] = value
   }
   return result
@@ -107,18 +115,17 @@ function safeAuthority(authority: string | undefined): string {
   return (authority?.split('@').at(-1) ?? '(missing)').slice(0, 200)
 }
 
-/** Resolve a CONNECT authority (`host:port`) into a validated address and port. */
+/** Resolve a CONNECT authority (`host:port`) into validated addresses and port. */
 async function validateAuthority(
   authority: string | undefined,
   options: EgressGuardOptions,
-): Promise<{ address: string; family: number; port: number } | undefined> {
+): Promise<{ port: number; addresses: Array<{ address: string; family: number }> } | undefined> {
   if (!authority) return undefined
   const resolved = await resolveSafeHttpUrl(`https://${authority}`, options)
-  const first = resolved.addresses[0]
-  if (!first) return undefined
+  if (resolved.addresses.length === 0) return undefined
   const port = Number(resolved.url.port || 443)
   if (!Number.isInteger(port) || port <= 0 || port > 65535) return undefined
-  return { address: first.address, family: first.family, port }
+  return { port, addresses: resolved.addresses }
 }
 
 async function readBody(req: IncomingMessage): Promise<Uint8Array | undefined> {
@@ -190,6 +197,36 @@ async function forward(
   }
 }
 
+function connectValidated(
+  addresses: Array<{ address: string; family: number }>,
+  port: number,
+  clientSocket: Duplex,
+): Promise<Duplex> {
+  return new Promise((resolve, reject) => {
+    let index = 0
+    const tryNext = (lastError?: unknown) => {
+      const entry = addresses[index++]
+      if (!entry || clientSocket.destroyed) {
+        reject(lastError ?? new Error('No validated address could be reached.'))
+        return
+      }
+      const upstream = connect({ host: entry.address, port, family: entry.family })
+      const onConnect = () => {
+        upstream.removeListener('error', onError)
+        resolve(upstream)
+      }
+      const onError = (error: unknown) => {
+        upstream.removeListener('connect', onConnect)
+        upstream.destroy()
+        tryNext(error)
+      }
+      upstream.once('connect', onConnect)
+      upstream.once('error', onError)
+    }
+    tryNext()
+  })
+}
+
 function tunnel(
   authority: string | undefined,
   clientSocket: Duplex,
@@ -199,7 +236,7 @@ function tunnel(
   blocked: string[],
 ): void {
   void (async () => {
-    let target: { address: string; family: number; port: number } | undefined
+    let target: { port: number; addresses: Array<{ address: string; family: number }> } | undefined
     let policyBlock = false
     try {
       target = await validateAuthority(authority, options)
@@ -221,12 +258,31 @@ function tunnel(
       return
     }
 
-    const upstream = connect(target.port, target.address, () => {
-      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-      if (head.length > 0) upstream.write(head)
-      upstream.pipe(clientSocket)
-      clientSocket.pipe(upstream)
-    })
+    let upstream: Duplex
+    try {
+      upstream = await connectValidated(target.addresses, target.port, clientSocket)
+    } catch (error) {
+      logger.debug(`Egress proxy connect failed for ${safeAuthority(authority)}: ${String(error)}`)
+      if (!clientSocket.destroyed) {
+        denyTunnel(
+          clientSocket,
+          '502 Bad Gateway',
+          'The network guard could not reach the destination.',
+        )
+      }
+      return
+    }
+
+    if (clientSocket.destroyed) {
+      upstream.destroy()
+      return
+    }
+
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (head.length > 0) upstream.write(head)
+    upstream.pipe(clientSocket)
+    clientSocket.pipe(upstream)
+
     upstream.on('error', () => clientSocket.destroy())
     clientSocket.on('error', () => upstream.destroy())
     clientSocket.on('close', () => upstream.destroy())

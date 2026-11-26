@@ -37,6 +37,7 @@ export interface UploadReferenceStore {
   set(key: string, reference: UploadReferenceInput): void
   delete(key: string): void
   flush(): Promise<void>
+  hasEntries?(): boolean
 }
 
 export interface UploadStoreOptions {
@@ -125,6 +126,15 @@ export class FileUploadReferenceStore implements UploadReferenceStore {
       return undefined
     }
     return entry
+  }
+
+  hasEntries(): boolean {
+    const now = this.now()
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAtMs > now) return true
+      this.entries.delete(key)
+    }
+    return false
   }
 
   set(key: string, reference: UploadReferenceInput): void {

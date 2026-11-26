@@ -111,6 +111,7 @@ Environment:
   VIDEO_ANALYZER_UPLOAD_TIMEOUT_MS   Budget for upload + processing until ACTIVE
   VIDEO_ANALYZER_POLL_INTERVAL_MS    Upload status poll interval
   VIDEO_ANALYZER_OUTPUT_DIR          Base directory for generated artifacts
+  VIDEO_ANALYZER_CACHE_DIR           Directory for persistent Gemini upload cache (env only)
   VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS Allow private/loopback direct media hosts
   VIDEO_ANALYZER_LOG_LEVEL           silent|error|warn|info|debug
   FFMPEG_PATH / FFPROBE_PATH
@@ -122,8 +123,9 @@ Environment:
   A .env file in the working directory may only set GEMINI_API_KEY, GEMINI_MODEL,
   VIDEO_ANALYZER_MAX_FRAMES, VIDEO_ANALYZER_DOWNLOAD_MAX_MB, the three timeout
   settings, VIDEO_ANALYZER_OUTPUT_DIR, and VIDEO_ANALYZER_LOG_LEVEL. It cannot set
-  PATH, FFMPEG_PATH/FFPROBE_PATH, VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS, or
-  VIDEO_ANALYZER_CLI_PATH. The YT_DLP_* settings are read from the environment only.
+  PATH, FFMPEG_PATH/FFPROBE_PATH, VIDEO_ANALYZER_ALLOW_PRIVATE_HOSTS,
+  VIDEO_ANALYZER_CACHE_DIR, or VIDEO_ANALYZER_CLI_PATH. The YT_DLP_* settings are
+  read from the environment only.
 `
 
 interface ParsedArgs {
@@ -212,6 +214,10 @@ async function readInputFile(filePath: string): Promise<string> {
 }
 
 async function resolveInputJson(parsed: ParsedArgs, io: CliIO): Promise<unknown> {
+  if (parsed.input !== undefined && parsed.inputFile !== undefined) {
+    throw invalidInput('Pass either --input or --input-file, not both.')
+  }
+
   let raw: string | undefined
   let source = 'stdin'
 
@@ -353,6 +359,11 @@ export async function runCli(
 
   try {
     const operation = requireOperation(parsed.command)
+    if (parsed.rest.length > 0) {
+      throw invalidInput(`Unexpected positional argument(s): ${parsed.rest.join(' ')}`, {
+        hint: 'Pass operation arguments as JSON via --input, --input-file, or stdin.',
+      })
+    }
     // `executeOperation` validates against the operation's own schema, so the
     // adapter does not parse the same payload a second time.
     const input = await resolveInputJson(parsed, io)

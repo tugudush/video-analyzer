@@ -7,6 +7,7 @@ import { loadConfig } from '../../src/config.js'
 import { analyzeVideoOperation } from '../../src/operations/analyzeVideo.js'
 import { searchTimestampOperation } from '../../src/operations/searchTimestamp.js'
 import { GeminiMediaService, type GeminiApi } from '../../src/services/gemini.js'
+import * as localSnapshot from '../../src/services/localSnapshot.js'
 import { FileUploadReferenceStore, credentialScope } from '../../src/services/uploadCache.js'
 import { VideoAnalyzerError } from '../../src/utils/errors.js'
 import { createLogger } from '../../src/utils/logger.js'
@@ -104,15 +105,21 @@ describe('AI media routing', () => {
     expect(result.data).toMatchObject({ durationSeconds: 42, source: 'local' })
   })
 
-  it('reuses the upload for unchanged local content', async () => {
+  it('reuses the upload for unchanged local content without creating a second snapshot', async () => {
     const source = path.join(dir, 'clip.mp4')
     await writeFile(source, 'media bytes', 'utf8')
     const { ctx, uploadFile } = createHarness()
+    const snapshotSpy = vi.spyOn(localSnapshot, 'createLocalSnapshot')
 
-    await analyzeVideoOperation.run({ videoPath: source, question: 'first' }, ctx)
-    await analyzeVideoOperation.run({ videoPath: source, question: 'second' }, ctx)
+    try {
+      await analyzeVideoOperation.run({ videoPath: source, question: 'first' }, ctx)
+      await analyzeVideoOperation.run({ videoPath: source, question: 'second' }, ctx)
 
-    expect(uploadFile).toHaveBeenCalledTimes(1)
+      expect(uploadFile).toHaveBeenCalledTimes(1)
+      expect(snapshotSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      snapshotSpy.mockRestore()
+    }
   })
 
   it('skips out-of-range timestamp checks when the duration is unknown', async () => {

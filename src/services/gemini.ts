@@ -389,6 +389,43 @@ export class GeminiMediaService {
     return this.config.geminiModel
   }
 
+  /**
+   * True when an in-memory or persisted cache entry could exist for a lookup.
+   * Callers use this to avoid pre-hashing local files when both caches are empty.
+   */
+  async hasPotentialCacheHits(): Promise<boolean> {
+    if (this.cache.size > 0) return true
+    if (!this.store) return false
+    await this.store.ready
+    return this.store.hasEntries ? this.store.hasEntries() : true
+  }
+
+  /**
+   * Look up an existing ACTIVE upload for `key` without starting an upload.
+   * Returns `null` on a miss or when the remote file is no longer active.
+   */
+  async findReusableUpload(key: string, signal?: AbortSignal): Promise<GeminiFileHandle | null> {
+    if (signal?.aborted) throw operationCancelled()
+
+    const cached = this.cache.get(key)
+    if (cached && cached.expiresAtMs > this.now()) {
+      const active = await this.checkActive(cached.handle.name, signal)
+      if (active) {
+        this.touch(key, cached)
+        return active
+      }
+      this.cache.delete(key)
+    }
+
+    const persisted = await this.readPersisted(key, signal)
+    if (persisted) {
+      this.touch(key, { handle: persisted.handle, expiresAtMs: persisted.expiresAtMs })
+      return persisted.handle
+    }
+
+    return null
+  }
+
   /** Upload once per source file, coalescing concurrent callers. */
   async ensureUploaded(params: EnsureUploadedParams): Promise<GeminiFileHandle> {
     const signal = params.signal
@@ -399,22 +436,10 @@ export class GeminiMediaService {
     const key = params.cacheKey
     if (!key) return this.uploadAndWait(params)
 
-    const cached = this.cache.get(key)
-    if (cached && cached.expiresAtMs > this.now()) {
-      const active = await this.checkActive(cached.handle.name, signal)
-      if (active) {
-        params.onProgress?.('Reusing previously uploaded Gemini file.')
-        this.touch(key, cached)
-        return active
-      }
-      this.cache.delete(key)
-    }
-
-    const persisted = await this.readPersisted(key, signal)
-    if (persisted) {
-      params.onProgress?.('Reusing a previously uploaded Gemini file.')
-      this.touch(key, { handle: persisted.handle, expiresAtMs: persisted.expiresAtMs })
-      return persisted.handle
+    const reusable = await this.findReusableUpload(key, signal)
+    if (reusable) {
+      params.onProgress?.('Reusing previously uploaded Gemini file.')
+      return reusable
     }
 
     let entry = this.inFlight.get(key)
@@ -645,9 +670,26 @@ export class GeminiMediaService {
     },
   ): Promise<string> {
     const handle = await this.ensureUploaded(params)
+    return this.generateWithHandle({
+      handle,
+      prompt: params.prompt,
+      ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
+      ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+      ...(params.signal ? { signal: params.signal } : {}),
+    })
+  }
+
+  /** Run a prompt against an already-verified active Gemini file handle. */
+  async generateWithHandle(params: {
+    handle: GeminiFileHandle
+    prompt: string
+    systemInstruction?: string
+    temperature?: number
+    signal?: AbortSignal
+  }): Promise<string> {
     return this.generate({
       parts: [
-        { kind: 'file', fileUri: handle.uri, mimeType: handle.mimeType },
+        { kind: 'file', fileUri: params.handle.uri, mimeType: params.handle.mimeType },
         { kind: 'text', text: params.prompt },
       ],
       ...(params.systemInstruction ? { systemInstruction: params.systemInstruction } : {}),
